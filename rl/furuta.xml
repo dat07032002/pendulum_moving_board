@@ -14,19 +14,43 @@
   <compiler angle="radian" autolimits="true"/>
   <option timestep="0.0005" integrator="RK4" gravity="0 0 -9.81"/>
 
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.4 0.4 0.4"/>
+  </visual>
+
+  <asset>
+    <texture name="sky" type="skybox" builtin="gradient" rgb1=".5 .6 .7" rgb2=".1 .1 .15"
+             width="256" height="256"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".2 .27 .34" rgb2=".12 .16 .2"
+             width="300" height="300"/>
+    <material name="grid" texture="grid" texrepeat="10 10" reflectance="0.1"/>
+  </asset>
+
   <default>
     <geom contype="0" conaffinity="0"/>   <!-- no collisions; this is a kinematic model -->
   </default>
 
   <worldbody>
-    <light pos="0 0 1.0" dir="0 0 -1"/>
+    <light pos="0.3 0.3 1.2" dir="-0.3 -0.3 -1"/>
+    <light pos="0 0 1.2" dir="0 0 -1"/>
 
-    <!-- TILTING BASE: the whole Furuta rig sits on a board that tilts about y (one fixed axis,
-         at the stand base z=0). Driven by a stiff position actuator tracking beta_ref(t); the
-         servo (LX-16A) is modeled only as this near-kinematic tracker. The board angle = beta. -->
+    <!-- WORLD (fixed) reference: floor + the tilt bearings + a bright marker for the TILT AXIS -->
+    <geom name="floor" type="plane" size="0.6 0.6 0.05" pos="0 0 -0.12" material="grid"/>
+    <!-- fixed bearing blocks the board axle pivots in (these do NOT tilt) -->
+    <geom type="box" size="0.012 0.012 0.06" pos="0  0.085 -0.06" rgba=".45 .45 .5 1"/>
+    <geom type="box" size="0.012 0.012 0.06" pos="0 -0.085 -0.06" rgba=".45 .45 .5 1"/>
+    <!-- *** TILT AXIS *** : bright yellow axle along y at the pivot — the board rotates about this -->
+    <geom name="tilt_axis" type="cylinder" fromto="0 -0.11 0  0 0.11 0" size="0.0045"
+          rgba=".95 .82 .1 1"/>
+
+    <!-- TILTING BASE: the whole Furuta rig sits on a board that tilts about y (the yellow axle,
+         at z=0). Driven by a stiff position actuator tracking beta_ref(t); the servo (LX-16A) is
+         modeled only as this near-kinematic tracker. The board angle = beta. -->
     <body name="board" pos="0 0 0">
       <joint name="tilt" type="hinge" axis="0 1 0" damping="0.5" range="-0.7 0.7"/>
       <inertial pos="0 0 0.05" mass="0.2" diaginertia="2e-3 2e-3 2e-3"/>
+      <!-- the tilting platform/plate (a real base) + the stand the Furuta rig mounts on -->
+      <geom type="box" size="0.05 0.07 0.005" pos="0 0 -0.006" rgba=".75 .55 .3 1"/>
       <geom type="cylinder" size="0.012 0.05" pos="0 0 0.05" rgba=".25 .25 .25 1"/>
 
       <body name="arm" pos="0 0 0.10">
