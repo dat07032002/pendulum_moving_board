@@ -108,7 +108,11 @@ def main():
     ap.add_argument("--steps", type=int, default=2_000_000)
     ap.add_argument("--nenv", type=int, default=8)
     ap.add_argument("--tag", default="run")          # per-run output subdir (parallel runs)
-    ap.add_argument("--no_sde", action="store_true") # disable gSDE (ablation / entropy fix)
+    # gSDE OFF by default: with auto target-entropy it let ent_coef run away (~0.77) -> entropy
+    # collapse -> stage-0 stalled below the 0.6 gate. The 2026-06-26 diag sweep confirmed --no_sde
+    # crosses 0.6 @130k and holds 1.00. `--sde` re-enables it (the gSDE contrast seed).
+    ap.add_argument("--no_sde", dest="use_sde", action="store_false", default=False)  # default
+    ap.add_argument("--sde", dest="use_sde", action="store_true")  # enable gSDE (contrast run)
     ap.add_argument("--seed", type=int, default=0)   # reproducibility (post-mortem fix)
     ap.add_argument("--ent_coef", default="auto")    # "auto" or a float (entropy fix)
     ap.add_argument("--target_entropy", default="auto")  # "auto"(=-act_dim) or a float (e.g. -2)
@@ -133,7 +137,7 @@ def main():
         learning_rate=3e-4, buffer_size=400_000, batch_size=512,
         gamma=0.998, tau=0.005, train_freq=1, gradient_steps=max(4, args.nenv // 2),  # gamma: ~2.5s horizon @200Hz
         learning_starts=10_000, ent_coef=ent_coef, target_entropy=target_entropy,
-        use_sde=not args.no_sde, sde_sample_freq=64,   # gSDE: smoother exploration -> sim-to-real
+        use_sde=args.use_sde, sde_sample_freq=64,   # default OFF (entropy-collapse fix; see args)
         top_quantiles_to_drop_per_net=2, seed=args.seed,
         device="cuda", verbose=1, tensorboard_log=os.path.join(HERE, "tb", args.tag),
     )

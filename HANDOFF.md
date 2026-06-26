@@ -18,11 +18,12 @@ IMU** on the board. One ESP32 runs everything. Deploy on-chip like project #1.
 - ✅ **Phase 0** (sim feasibility) done — ±30° is physically feasible; orientation-dependent.
 - ✅ **Phase 1 CODE** done — 8-D tilt env, true-vertical reward, tilt curriculum, obs-agnostic
   exporter. All validated locally.
-- ⏸️ **Phase 1 TRAIN — STOPPED (2026-06-26), needs a config fix before relaunch.** First runs (nenv=16)
-  were slow; relaunched at nenv=8 (correct), but then **all seeds oscillated in stage 0 and never
-  crossed the 0.6 gate** — diagnosed as an **entropy collapse**: `ent_coef` stuck ~0.77 (vs project #1's
-  ~0.24) → policy too stochastic → noisy balance. Critic was healthy (not divergence). **Fixes are
-  staged but NOT yet validated/launched.** Server is idle.
+- ✅ **Phase 1 TRAIN config — FIXED & VALIDATED (2026-06-26).** The stage-0 stall was an **entropy
+  collapse** (`ent_coef` ran away to ~0.77 under gSDE + auto target-entropy). The diag sweep (300k,
+  nenv=8, seed 0) resolved it: **`--no_sde` crosses 0.6 @130k and holds 1.00 (240k→300k)**; the
+  `--target_entropy -2` variant (gSDE on) also holds 1.00 (crosses 0.6 @100k). **Winner locked as the
+  `train_tqc.py` default (gSDE now OFF by default; `--sde` re-enables for the contrast seed).** Ready
+  to launch on the UT server. Logs: `rl/A_nosde.log`, `rl/B_targent.log`.
 - ⬜ **Phases 2–5** (hardware: LX-16A + BNO086 wiring/firmware, deploy, iterate) — not started.
 
 **▶ IMMEDIATE NEXT ACTION (START HERE tomorrow):**
@@ -218,13 +219,15 @@ easier, but the policy must still handle transits through φ=90°.
   PPO intuition "more envs = better" does NOT apply because `gradient_steps` scales with nenv. A
   cleaner future fix is to **decouple** them — fix `gradient_steps` independent of nenv.) Evidence:
   tilt env stage-0 reached 0.41@80k at nenv=8 (== project #1's 0.43) but only 0.28@400k at nenv=16.
-- **ENTROPY COLLAPSE (2026-06-26, open — fix staged not validated).** At nenv=8 the seeds learned
-  stage-0 to ~0.4–0.55 by ~160–200k then **oscillated/dropped** (s1 0.55→0.18) and never crossed the
-  0.6 gate. Root cause = **`ent_coef` stuck ~0.77** (vs project #1's ~0.24) → policy too stochastic →
-  noisy balance. NOT critic divergence (`critic_loss` stable ~4.7). Staged fixes (configurable in
-  `train_tqc.py`/`diag_stage0.py`): **`--no_sde`** (disable gSDE — prime suspect) and/or
-  **`--target_entropy -2`** (force the policy to commit) and/or a small fixed `--ent_coef`. **Must run
-  the diag sweep first** (see §0 step 1) to pick the one that holds, before the full launch.
+- **ENTROPY COLLAPSE (2026-06-26 — RESOLVED).** At nenv=8 the seeds learned stage-0 to ~0.4–0.55 by
+  ~160–200k then **oscillated/dropped** (s1 0.55→0.18) and never crossed the 0.6 gate. Root cause =
+  **`ent_coef` ran away to ~0.77** under **gSDE + auto target-entropy** → policy too stochastic →
+  noisy balance. NOT critic divergence (`critic_loss` stable ~4.7). **Fix:** constrain entropy by
+  either route — `--no_sde` (chosen default) OR `--target_entropy -2` (gSDE on). Diag sweep proof:
+  `--no_sde` crosses 0.6 @130k → 1.00 @240k, held to 300k; `--target_entropy -2` crosses 0.6 @100k →
+  1.00 @240k, held. **`train_tqc.py` default is now gSDE-OFF** (`use_sde=args.use_sde`, default False;
+  `--sde` re-enables for the contrast seed). Note: gSDE off is harmless for deployment — the exported
+  policy is the deterministic mean action and CAPS already handles action smoothness.
 - **Adaptive quantile dropping** was considered and **deferred** — not our bottleneck; keep fixed
   `top_quantiles_to_drop_per_net=2`. If overestimation instability appears, sweep the fixed value
   (3/5) before anything custom.
