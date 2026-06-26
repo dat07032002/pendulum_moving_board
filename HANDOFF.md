@@ -136,8 +136,12 @@ across stages. DR off in stage 0 only.
 - `ssh -i ~/.ssh/aere_codex_ed25519 tn22833@aere-a83514.ae.utexas.edu` (needs **UT VPN**).
 - Project dir **`~/furuta_tilt/`** (code in `rl/`). **Reuses `~/furuta_rl/.venv`** (torch cu124 +
   sb3-contrib + mujoco) — do NOT touch `~/furuta_rl/` or `~/pendulum/`.
-- 3 runs: `tilt_s0/s1/s2` (GPU 0/1/2), `--steps 8000000 --nenv 16 --seed {0,1,2} --tag tilt_s{n}`,
+- 3 runs: `tilt_s0/s1/s2` (GPU 0/1/2), **`--nenv 8`** `--steps 8000000 --seed {0,1,2} --tag tilt_s{n}`,
   logs `train_tilt_s{n}.log`, models `rl/models/tilt_s{n}/best_model.zip` (+ `ckpt_*`).
+- **NOTE (2026-06-26): first launched at nenv=16 → stage-0 was slow (0.28 @ 400k).** Investigation:
+  a stage-0 bisect showed the tilt env at **nenv=8 matches project #1 (0.41 vs 0.43 @ 80k)**, board
+  wobble negligible (0.012°) → the env is fine; **nenv=16 is just less sample-efficient** (matches the
+  v2 post-mortem). Relaunched at **nenv=8** (old nenv16 logs → `*_nenv16.log`). Use nenv=8.
 - Monitor: `grep -E 'curriculum|success_rate|ep_rew_mean' train_tilt_s0.log | tail`.
 - Launch cmd (for reference / relaunch):
   `cd ~/furuta_tilt && CUDA_VISIBLE_DEVICES=0 nohup ~/furuta_rl/.venv/bin/python rl/train_tqc.py
