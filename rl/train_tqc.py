@@ -108,22 +108,31 @@ def main():
     ap.add_argument("--steps", type=int, default=2_000_000)
     ap.add_argument("--nenv", type=int, default=8)
     ap.add_argument("--tag", default="run")          # per-run output subdir (parallel runs)
-    ap.add_argument("--no_sde", action="store_true") # disable gSDE (ablation)
+    ap.add_argument("--no_sde", action="store_true") # disable gSDE (ablation / entropy fix)
     ap.add_argument("--seed", type=int, default=0)   # reproducibility (post-mortem fix)
+    ap.add_argument("--ent_coef", default="auto")    # "auto" or a float (entropy fix)
+    ap.add_argument("--target_entropy", default="auto")  # "auto"(=-act_dim) or a float (e.g. -2)
+    ap.add_argument("--eval_tilt_deg", type=float, default=30.0)  # eval at deployment tilt
     args = ap.parse_args()
+    ent_coef = args.ent_coef if args.ent_coef == "auto" else float(args.ent_coef)
+    target_entropy = args.target_entropy if args.target_entropy == "auto" else float(args.target_entropy)
     MODELS = os.path.join(HERE, "models", args.tag)
     os.makedirs(MODELS, exist_ok=True)
 
     venv = VecMonitor(SubprocVecEnv([make_env(True) for _ in range(args.nenv)]),
                       info_keywords=("is_success",))
     eval_env = VecMonitor(SubprocVecEnv([make_env(True)]), info_keywords=("is_success",))
+    # EVAL AT THE DEPLOYMENT CONDITION: full swing-up + +-eval_tilt_deg random tilt + DR, so
+    # best_model.zip is selected on real tilt performance (the eval env is NOT curriculum-synced).
+    eval_env.set_attr("init_angle_max", np.pi)
+    eval_env.set_attr("tilt_amp", float(np.deg2rad(args.eval_tilt_deg)))
 
     model = TQC(
         "MlpPolicy", venv,
         policy_kwargs=dict(net_arch=dict(pi=[64, 64], qf=[256, 256])),
         learning_rate=3e-4, buffer_size=400_000, batch_size=512,
         gamma=0.998, tau=0.005, train_freq=1, gradient_steps=max(4, args.nenv // 2),  # gamma: ~2.5s horizon @200Hz
-        learning_starts=10_000, ent_coef="auto",
+        learning_starts=10_000, ent_coef=ent_coef, target_entropy=target_entropy,
         use_sde=not args.no_sde, sde_sample_freq=64,   # gSDE: smoother exploration -> sim-to-real
         top_quantiles_to_drop_per_net=2, seed=args.seed,
         device="cuda", verbose=1, tensorboard_log=os.path.join(HERE, "tb", args.tag),

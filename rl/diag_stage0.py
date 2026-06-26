@@ -54,13 +54,19 @@ class RollingReport(BaseCallback):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--w", type=float, default=0.5)
+    ap.add_argument("--w", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=80000)
     ap.add_argument("--nenv", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--no_sde", action="store_true")
+    ap.add_argument("--ent_coef", default="auto")
+    ap.add_argument("--target_entropy", default="auto")
     args = ap.parse_args()
-    print(f"=== stage-0 bisect: arm_envelope_w={args.w}, {args.steps} steps, nenv={args.nenv}, "
-          f"seed={args.seed} ===", flush=True)
+    ec = args.ent_coef if args.ent_coef == "auto" else float(args.ent_coef)
+    te = args.target_entropy if args.target_entropy == "auto" else float(args.target_entropy)
+    print(f"=== stage-0 bisect: w={args.w}, {args.steps} steps, nenv={args.nenv}, seed={args.seed}, "
+          f"sde={not args.no_sde}, ent_coef={args.ent_coef}, target_entropy={args.target_entropy} ===",
+          flush=True)
 
     venv = VecMonitor(SubprocVecEnv([make_env(args.w) for _ in range(args.nenv)]),
                       info_keywords=("is_success",))
@@ -69,8 +75,8 @@ def main():
         policy_kwargs=dict(net_arch=dict(pi=[64, 64], qf=[256, 256])),
         learning_rate=3e-4, buffer_size=400_000, batch_size=512,
         gamma=0.998, tau=0.005, train_freq=1, gradient_steps=max(4, args.nenv // 2),
-        learning_starts=10_000, ent_coef="auto",
-        use_sde=True, sde_sample_freq=64, top_quantiles_to_drop_per_net=2,
+        learning_starts=10_000, ent_coef=ec, target_entropy=te,
+        use_sde=not args.no_sde, sde_sample_freq=64, top_quantiles_to_drop_per_net=2,
         device="cuda", verbose=0, seed=args.seed,
     )
     model.learn(total_timesteps=args.steps, callback=RollingReport(), progress_bar=False)
