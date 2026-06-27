@@ -116,6 +116,15 @@ class FurutaEnv(gym.Env):
         bp = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "pole")
         self.model.body_inertia[bp] = self.nom["inertia_p"]
 
+    def set_params(self, **kw):
+        """Set curriculum/eval params on the ACTUAL env. Call via VecEnv.env_method('set_params',...)
+        NOT VecEnv.set_attr — gymnasium Wrapper.__setattr__ writes to the Monitor wrapper, so set_attr
+        silently never reaches FurutaEnv (curriculum/eval bug found 2026-06-26). env_method forwards
+        the call through the wrapper, so `self` here is the real FurutaEnv."""
+        for k, v in kw.items():
+            assert hasattr(self, k), f"unknown env param {k}"
+            setattr(self, k, v)
+
     # ---- gym API ----
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)

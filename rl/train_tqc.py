@@ -77,10 +77,9 @@ class Curriculum(BaseCallback):
         amax, assist, rand, tilt_deg = STAGES[self.stage]
         if self.force_no_dr:             # nominal pretrain: never enable DR/tilt
             rand, tilt_deg = False, 0
-        self.training_env.set_attr("init_angle_max", amax)
-        self.training_env.set_attr("init_vel_assist", assist)
-        self.training_env.set_attr("randomize", rand)
-        self.training_env.set_attr("tilt_amp", float(np.deg2rad(tilt_deg)))
+        # env_method (NOT set_attr — set_attr writes to the Monitor wrapper, never reaches FurutaEnv)
+        self.training_env.env_method("set_params", init_angle_max=amax, init_vel_assist=assist,
+                                     randomize=rand, tilt_amp=float(np.deg2rad(tilt_deg)))
         print(f"[curriculum] -> stage {self.stage}: init_angle_max={amax:.2f} "
               f"assist={assist} randomize={rand} tilt={tilt_deg}deg", flush=True)
 
@@ -173,10 +172,11 @@ def main():
     # Phase A (--no_dr) -> nominal full swing-up, level, no DR. best_model.zip selected on this.
     eval_env = VecMonitor(SubprocVecEnv([make_env(not args.no_dr, args.free_arm)]),
                           info_keywords=("is_success",))
-    eval_env.set_attr("init_angle_max", np.pi)
-    eval_env.set_attr("tilt_amp", float(np.deg2rad(0.0 if args.no_dr else args.eval_tilt_deg)))
-    venv.set_attr("arm_center_w", args.arm_center_w)
-    eval_env.set_attr("arm_center_w", args.arm_center_w)
+    # env_method (NOT set_attr — see Curriculum._apply / FurutaEnv.set_params)
+    eval_env.env_method("set_params", init_angle_max=float(np.pi),
+                        tilt_amp=float(np.deg2rad(0.0 if args.no_dr else args.eval_tilt_deg)),
+                        arm_center_w=args.arm_center_w)
+    venv.env_method("set_params", arm_center_w=args.arm_center_w)
 
     model = TQC(
         "MlpPolicy", venv,
