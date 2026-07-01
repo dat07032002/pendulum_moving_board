@@ -26,7 +26,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
-from furuta_env import FurutaEnv  # noqa: E402
+from furuta_env import DR_COMPONENTS, FurutaEnv  # noqa: E402
 from residual_env import ResidualActionWrapper  # noqa: E402
 
 from sb3_contrib import TQC  # noqa: E402
@@ -232,6 +232,17 @@ def main():
     ap.add_argument("--clean_floor", type=float, default=0.60)
     ap.add_argument("--p_corner", type=float, default=0.10,
                     help="Probability that each DR draw is forced to a range endpoint")
+    ap.add_argument(
+        "--dr_components",
+        default="all",
+        help="Comma-separated DR components, or 'all'/'none'",
+    )
+    ap.add_argument(
+        "--eval_freq_steps",
+        type=int,
+        default=20_000,
+        help="Training timesteps between target and clean evaluations",
+    )
     ap.add_argument("--tilt_amp_min_fraction", type=float, default=0.30,
                     help="Training-only minimum episode tilt amplitude as a fraction of the cap")
     ap.add_argument("--tilt_rate_min", type=float, default=0.50,
@@ -247,6 +258,22 @@ def main():
         ap.error("--residual_scale must be in (0, 0.15]")
     if not 0.0 <= args.p_corner <= 1.0:
         ap.error("--p_corner must be between 0 and 1")
+    if args.dr_components == "all":
+        dr_component_set = None
+    elif args.dr_components == "none":
+        dr_component_set = frozenset()
+    else:
+        dr_component_set = frozenset(
+            part.strip() for part in args.dr_components.split(",") if part.strip()
+        )
+        unknown = dr_component_set.difference(DR_COMPONENTS)
+        if not dr_component_set or unknown:
+            ap.error(
+                "--dr_components must be 'all', 'none', or a comma-separated subset of "
+                f"{','.join(DR_COMPONENTS)}; unknown={','.join(sorted(unknown)) or 'none'}"
+            )
+    if args.eval_freq_steps <= 0:
+        ap.error("--eval_freq_steps must be positive")
     if not 0.0 <= args.tilt_amp_min_fraction <= 1.0:
         ap.error("--tilt_amp_min_fraction must be between 0 and 1")
     if not 0.0 <= args.tilt_rate_min <= 2.0:
@@ -274,15 +301,21 @@ def main():
     eval_env.env_method("set_params", init_angle_max=float(np.pi),
                         tilt_amp=float(np.deg2rad(0.0 if args.no_dr else args.eval_tilt_deg)),
                         arm_center_w=args.arm_center_w,
-                        dr_probability=1.0, dr_scale=1.0, p_corner=args.p_corner)
+                        dr_probability=1.0, dr_scale=1.0, p_corner=args.p_corner,
+                        dr_components=dr_component_set)
     venv.env_method(
         "set_params",
         arm_center_w=args.arm_center_w,
         p_corner=args.p_corner,
+        dr_components=dr_component_set,
         tilt_amp_min_fraction=args.tilt_amp_min_fraction,
         tilt_rate_min=args.tilt_rate_min,
     )
-    print(f"[domain_randomization] p_corner={args.p_corner:.2f}", flush=True)
+    print(
+        f"[domain_randomization] p_corner={args.p_corner:.2f} "
+        f"components={args.dr_components}",
+        flush=True,
+    )
     print(
         f"[tilt_training] amp_fraction={args.tilt_amp_min_fraction:.2f}-1.00 "
         f"rate_cap={args.tilt_rate_min:.2f}-2.00 rad/s",
@@ -349,7 +382,8 @@ def main():
     callbacks = [
         curriculum,
         EvalCallback(eval_env, best_model_save_path=MODELS, log_path=MODELS,
-                     eval_freq=20_000 // args.nenv, n_eval_episodes=args.n_eval,
+                     eval_freq=max(args.eval_freq_steps // args.nenv, 1),
+                     n_eval_episodes=args.n_eval,
                      deterministic=True, callback_after_eval=stop_cb),
     ]
     # In a clean no-plant-DR continuation run, the primary evaluator already is the clean
@@ -377,7 +411,7 @@ def main():
                 clean_eval_env,
                 best_model_save_path=os.path.join(MODELS, "clean"),
                 log_path=os.path.join(MODELS, "clean"),
-                eval_freq=20_000 // args.nenv,
+                eval_freq=max(args.eval_freq_steps // args.nenv, 1),
                 n_eval_episodes=args.n_eval,
                 deterministic=True,
                 callback_after_eval=clean_guard,

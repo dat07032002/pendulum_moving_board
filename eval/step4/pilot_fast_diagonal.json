@@ -1,0 +1,20 @@
+{
+  "condition": "fast_diagonal",
+  "episodes": 5,
+  "successes": 0,
+  "success_rate": 0.0,
+  "catches": 3,
+  "catch_rate": 0.6,
+  "falls": 5,
+  "mean_upper_rms_deg": 17.45930825069326,
+  "p95_upper_rms_deg": 21.64204674674514,
+  "mean_saturation_fraction": 0.06785520793427598,
+  "max_saturation_fraction": 0.18691588785046728,
+  "worst_seeds_by_return": [
+    59001,
+    59003,
+    59004,
+    59002,
+    59000
+  ]
+}

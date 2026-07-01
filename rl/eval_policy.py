@@ -20,7 +20,7 @@ from collections import defaultdict
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
-from furuta_env import DT, FurutaEnv  # noqa: E402
+from furuta_env import DR_COMPONENTS, DT, FurutaEnv  # noqa: E402
 from residual_env import ResidualActionWrapper  # noqa: E402
 from sb3_contrib import TQC  # noqa: E402
 
@@ -69,6 +69,7 @@ def evaluate_arm(model: TQC, args, arm_name: str, arm_limit: float | None) -> di
     base_env.tilt_amp = float(np.deg2rad(args.tilt_deg))
     base_env.tilt_betadot_max = args.tilt_rate_max
     base_env.p_corner = args.p_corner
+    base_env.dr_components = args.dr_component_set
     base_env.arm_limit = arm_limit
     env = (
         ResidualActionWrapper(base_env, args.residual_base, args.residual_scale)
@@ -253,7 +254,8 @@ def evaluate_model(path: str, args) -> dict[str, dict[str, np.ndarray]]:
         f"{path}  | sha256={sha256(path)}\n"
         f"N={args.n}, seeds={args.seed0}..{args.seed0 + args.n - 1}, "
         f"tilt={args.tilt_deg:g}deg, tilt_rate_cap={args.tilt_rate_max:g}rad/s, "
-        f"DR={'on' if args.dr else 'off'}, p_corner={args.p_corner:g}, deterministic"
+        f"DR={'on' if args.dr else 'off'}, components={args.dr_components}, "
+        f"p_corner={args.p_corner:g}, deterministic"
     )
     if args.residual_base:
         print(
@@ -308,6 +310,7 @@ def save_npz(path: str, model_results, model_paths: list[str], args) -> None:
         "tilt_rate_max": np.asarray(args.tilt_rate_max),
         "dr": np.asarray(args.dr),
         "p_corner": np.asarray(args.p_corner),
+        "dr_components": np.asarray(args.dr_components),
         "seed0": np.asarray(args.seed0),
         "residual_scale": np.asarray(args.residual_scale),
     }
@@ -332,6 +335,11 @@ def main() -> None:
     ap.add_argument("--tilt_deg", type=float, default=0.0)
     ap.add_argument("--tilt_rate_max", type=float, default=2.0)
     ap.add_argument("--dr", action="store_true")
+    ap.add_argument(
+        "--dr_components",
+        default="all",
+        help="Comma-separated DR components, or 'all'/'none'",
+    )
     ap.add_argument("--p_corner", type=float, default=0.10)
     ap.add_argument("-n", type=int, default=100)
     ap.add_argument("--seed0", type=int, default=9000)
@@ -344,6 +352,19 @@ def main() -> None:
         ap.error("-n must be positive")
     if not 0.0 <= args.p_corner <= 1.0:
         ap.error("--p_corner must be between 0 and 1")
+    if args.dr_components == "all":
+        args.dr_component_set = None
+    elif args.dr_components == "none":
+        args.dr_component_set = frozenset()
+    else:
+        requested = frozenset(part.strip() for part in args.dr_components.split(",") if part.strip())
+        unknown = requested.difference(DR_COMPONENTS)
+        if not requested or unknown:
+            ap.error(
+                "--dr_components must be 'all', 'none', or a comma-separated subset of "
+                f"{','.join(DR_COMPONENTS)}; unknown={','.join(sorted(unknown)) or 'none'}"
+            )
+        args.dr_component_set = requested
     if args.tilt_rate_max <= 0.0:
         ap.error("--tilt_rate_max must be positive")
     if not 0.0 < args.sat_threshold <= 1.0:

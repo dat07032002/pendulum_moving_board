@@ -1,0 +1,212 @@
+[
+  {
+    "model": "models/v10_pm15_nt_s3/final_model.zip",
+    "gamma": 0.99,
+    "rows": [
+      {
+        "label": "level",
+        "group": "retention",
+        "axis": "both",
+        "angle": 0.0,
+        "speed": 0.0,
+        "successes": 198,
+        "catches": 198,
+        "episodes": 200,
+        "success_rate": 0.99,
+        "ci_lo": 0.9642775148038205,
+        "ci_hi": 0.9972533993962251,
+        "catch_rate": 0.99
+      },
+      {
+        "label": "roll 120",
+        "group": "retention",
+        "axis": "roll",
+        "angle": 15.0,
+        "speed": 120.0,
+        "successes": 200,
+        "catches": 200,
+        "episodes": 200,
+        "success_rate": 1.0,
+        "ci_lo": 0.9811539940816791,
+        "ci_hi": 1.0,
+        "catch_rate": 1.0
+      },
+      {
+        "label": "pitch 60",
+        "group": "envelope",
+        "axis": "pitch",
+        "angle": 15.0,
+        "speed": 60.0,
+        "successes": 198,
+        "catches": 198,
+        "episodes": 200,
+        "success_rate": 0.99,
+        "ci_lo": 0.9642775148038205,
+        "ci_hi": 0.9972533993962251,
+        "catch_rate": 0.99
+      },
+      {
+        "label": "pitch 80",
+        "group": "envelope",
+        "axis": "pitch",
+        "angle": 15.0,
+        "speed": 80.0,
+        "successes": 193,
+        "catches": 193,
+        "episodes": 200,
+        "success_rate": 0.965,
+        "ci_lo": 0.9295285391333187,
+        "ci_hi": 0.9829446753626429,
+        "catch_rate": 0.965
+      },
+      {
+        "label": "pitch 100",
+        "group": "envelope",
+        "axis": "pitch",
+        "angle": 15.0,
+        "speed": 100.0,
+        "successes": 193,
+        "catches": 194,
+        "episodes": 200,
+        "success_rate": 0.965,
+        "ci_lo": 0.9295285391333187,
+        "ci_hi": 0.9829446753626429,
+        "catch_rate": 0.97
+      },
+      {
+        "label": "pitch 120",
+        "group": "envelope",
+        "axis": "pitch",
+        "angle": 15.0,
+        "speed": 120.0,
+        "successes": 191,
+        "catches": 194,
+        "episodes": 200,
+        "success_rate": 0.955,
+        "ci_lo": 0.9167024063390322,
+        "ci_hi": 0.9761477282752958,
+        "catch_rate": 0.97
+      },
+      {
+        "label": "both 60",
+        "group": "deploy",
+        "axis": "both",
+        "angle": 15.0,
+        "speed": 60.0,
+        "successes": 194,
+        "catches": 195,
+        "episodes": 200,
+        "success_rate": 0.97,
+        "ci_lo": 0.9361048802675267,
+        "ci_hi": 0.9861798741692518,
+        "catch_rate": 0.975
+      },
+      {
+        "label": "both 80",
+        "group": "deploy",
+        "axis": "both",
+        "angle": 15.0,
+        "speed": 80.0,
+        "successes": 194,
+        "catches": 195,
+        "episodes": 200,
+        "success_rate": 0.97,
+        "ci_lo": 0.9361048802675267,
+        "ci_hi": 0.9861798741692518,
+        "catch_rate": 0.975
+      },
+      {
+        "label": "both 100",
+        "group": "deploy",
+        "axis": "both",
+        "angle": 15.0,
+        "speed": 100.0,
+        "successes": 193,
+        "catches": 196,
+        "episodes": 200,
+        "success_rate": 0.965,
+        "ci_lo": 0.9295285391333187,
+        "ci_hi": 0.9829446753626429,
+        "catch_rate": 0.98
+      },
+      {
+        "label": "both 120",
+        "group": "deploy",
+        "axis": "both",
+        "angle": 15.0,
+        "speed": 120.0,
+        "successes": 192,
+        "catches": 199,
+        "episodes": 200,
+        "success_rate": 0.96,
+        "ci_lo": 0.9230670617058012,
+        "ci_hi": 0.9795946128493436,
+        "catch_rate": 0.995
+      },
+      {
+        "label": "corners 15",
+        "group": "retention",
+        "axis": "both",
+        "angle": 15.0,
+        "speed": 40.0,
+        "successes": 197,
+        "catches": 199,
+        "episodes": 200,
+        "success_rate": 0.985,
+        "ci_lo": 0.9568335194437211,
+        "ci_hi": 0.9948858548155076,
+        "catch_rate": 0.995
+      },
+      {
+        "label": "pitch10 120",
+        "group": "compare",
+        "axis": "pitch",
+        "angle": 10.0,
+        "speed": 120.0,
+        "successes": 196,
+        "catches": 196,
+        "episodes": 200,
+        "success_rate": 0.98,
+        "ci_lo": 0.9497121344948062,
+        "ci_hi": 0.9921956998236058,
+        "catch_rate": 0.98
+      },
+      {
+        "label": "both10 120",
+        "group": "compare",
+        "axis": "both",
+        "angle": 10.0,
+        "speed": 120.0,
+        "successes": 194,
+        "catches": 197,
+        "episodes": 200,
+        "success_rate": 0.97,
+        "ci_lo": 0.9361048802675267,
+        "ci_hi": 0.9861798741692518,
+        "catch_rate": 0.985
+      }
+    ],
+    "calibration": {
+      "both0/0": {
+        "q": 288.48147176702236,
+        "rtg": 283.9891917367753
+      },
+      "pitch10/120": {
+        "q": 278.03417059245965,
+        "rtg": 273.4886575452056
+      },
+      "both10/120": {
+        "q": 264.83778014794433,
+        "rtg": 264.5540893250059
+      },
+      "pitch15/120": {
+        "q": 275.1700100599307,
+        "rtg": 271.81423285950257
+      },
+      "both15/120": {
+        "q": 255.5691804301035,
+        "rtg": 262.0715426574402
+      }
+    }
+  }
+]

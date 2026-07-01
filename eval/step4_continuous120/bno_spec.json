@@ -1,0 +1,25 @@
+{
+  "condition": "bno_spec",
+  "episodes": 500,
+  "successes": 49,
+  "success_rate": 0.098,
+  "catches": 385,
+  "catch_rate": 0.77,
+  "falls": 451,
+  "mean_upper_rms_deg": 13.096792746106699,
+  "p95_upper_rms_deg": 20.863471871678346,
+  "mean_saturation_fraction": 0.03564899609376319,
+  "max_saturation_fraction": 0.3333333333333333,
+  "worst_seeds_by_return": [
+    62239,
+    62362,
+    62206,
+    62450,
+    62388,
+    62007,
+    62096,
+    62240,
+    62001,
+    62299
+  ]
+}

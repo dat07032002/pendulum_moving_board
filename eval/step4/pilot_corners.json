@@ -1,0 +1,20 @@
+{
+  "condition": "corners",
+  "episodes": 5,
+  "successes": 3,
+  "success_rate": 0.6,
+  "catches": 5,
+  "catch_rate": 1.0,
+  "falls": 0,
+  "mean_upper_rms_deg": 20.735196370207408,
+  "p95_upper_rms_deg": 21.298174747971206,
+  "mean_saturation_fraction": 0.0010999999999999998,
+  "max_saturation_fraction": 0.0025,
+  "worst_seeds_by_return": [
+    59003,
+    59001,
+    59004,
+    59000,
+    59002
+  ]
+}

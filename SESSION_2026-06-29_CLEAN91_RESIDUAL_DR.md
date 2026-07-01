@@ -135,3 +135,74 @@ training-eval peak, but no residual checkpoint has passed independent 500-episod
 
 The session changes are currently uncommitted. They include evaluator/exporter fixes, residual
 training/evaluation support, launch scripts, the GIF, and this documentation. Do not discard them.
+
+## Component-wise DR ablation — 2026-06-29
+
+The clean 91.5% master was evaluated for 500 identical seeds per condition. The evaluator always
+consumed every DR random draw, even when a component was disabled, so initial states and tilt
+trajectories remained paired. Two tests were run for every component:
+
+- `only_X`: only component X is randomized;
+- `without_X`: full DR except component X.
+
+Anchors:
+
+- no applied DR components (but identical DR RNG stream): **92.0% (460/500)**;
+- full DR: **45.2% (226/500)**.
+
+| Component | Only this component | Full DR without it |
+|---|---:|---:|
+| motor gear | 90.6% | 47.0% |
+| arm damping | 94.2% | 44.6% |
+| pole damping | 92.8% | 45.0% |
+| arm friction | 92.6% | 44.6% |
+| pole friction | 93.4% | 44.2% |
+| pole inertia | 91.6% | 44.8% |
+| observation noise | 93.0% | 43.6% |
+| **action delay** | **48.8%** | **93.0%** |
+| IMU noise | 93.4% | 45.0% |
+
+Action delay is the decisive bottleneck. Conditional sustained success:
+
+| Delay | Delay-only | Full DR |
+|---:|---:|---:|
+| 1 step | 93.4% | 96.4% |
+| 2 steps | 52.0% | 36.8% |
+| 3 steps | 0.0% | 1.8% |
+
+The best residual seed-3 checkpoint was independently checked on the same 500 seeds:
+
+- delay only: **48.2%**;
+- full DR: **44.2%**;
+- full DR without delay: **91.4%**.
+
+It therefore learned no meaningful delay compensation; its earlier 66%/50-episode peak was
+sampling noise. A bounded action-amplitude correction cannot repair an unobserved multi-step phase
+lag. Before more training:
+
+1. verify the real control/actuation delay (the environment header says 1–2 steps, but DR samples
+   1–3);
+2. if three steps are not physically plausible, remove that unsupported endpoint;
+3. if variable 2–3 step delay is real, expose enough action history/actuator state (or use a
+   recurrent policy) so the problem is Markov;
+4. retrain with a delay-only curriculum before reintroducing the other DR factors.
+
+## Fixed-action-delay residual training — final verification
+
+Five residual seeds were trained with motor delay fixed at its nominal one step (5 ms), while all
+other plant/sensor DR components remained enabled. Each final selected checkpoint was independently
+evaluated on the same 500 seeds under target non-delay DR and clean ±20° conditions.
+
+| Seed | DR sustained | DR catch | Clean sustained | Clean catch |
+|---|---:|---:|---:|---:|
+| 0 | 91.8% | 96.0% | **92.2%** | 96.2% |
+| 1 | 92.0% | 96.4% | 89.8% | 94.2% |
+| 2 | 91.4% | 95.6% | 89.6% | 94.2% |
+| 3 | 91.4% | 95.8% | 89.2% | 94.6% |
+| 4 | **92.8%** | **96.6%** | 90.4% | 95.2% |
+
+Seed 4 is the point-estimate DR winner, and seed 0 has the best clean retention. The confidence
+intervals overlap, so the seeds are statistically very similar. The frozen clean master already
+scored 93.0% under the same full-DR-without-action-delay condition; residual training therefore
+preserved the solution but did not materially improve it. For future cable-limit training, use the
+simpler verified clean master as the warm start rather than the two-network residual controller.

@@ -1,0 +1,20 @@
+{
+  "condition": "bno_spec",
+  "episodes": 5,
+  "successes": 5,
+  "success_rate": 1.0,
+  "catches": 5,
+  "catch_rate": 1.0,
+  "falls": 0,
+  "mean_upper_rms_deg": 11.489364968138824,
+  "p95_upper_rms_deg": 12.242420590627063,
+  "mean_saturation_fraction": 0.0013,
+  "max_saturation_fraction": 0.002,
+  "worst_seeds_by_return": [
+    59004,
+    59001,
+    59002,
+    59000,
+    59003
+  ]
+}

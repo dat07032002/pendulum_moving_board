@@ -8,3 +8,9 @@ rl/models/*/ckpt_*.zip
 serial_log.txt
 serial_in.txt
 .arduino-build/
+
+# 2D training outputs and large media (regenerate with the scripts)
+rl/models/*/
+*.gif
+rl/tb/
+tb/

@@ -1,0 +1,25 @@
+{
+  "condition": "level",
+  "episodes": 500,
+  "successes": 497,
+  "success_rate": 0.994,
+  "catches": 497,
+  "catch_rate": 0.994,
+  "falls": 3,
+  "mean_upper_rms_deg": 2.296173307575652,
+  "p95_upper_rms_deg": 2.937206947530856,
+  "mean_saturation_fraction": 0.002567636141636142,
+  "max_saturation_fraction": 0.1111111111111111,
+  "worst_seeds_by_return": [
+    62317,
+    62397,
+    62239,
+    62263,
+    62303,
+    62202,
+    62410,
+    62031,
+    62498,
+    62203
+  ]
+}

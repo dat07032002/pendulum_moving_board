@@ -20,7 +20,17 @@ class RetentionTQC(TQC):
         actor_start_steps: int = 100_000,
         teacher_coef: float = 100.0,
         teacher_fraction: float = 0.5,
+        teacher_target_ratio: float | None = None,
+        use_teacher: bool = True,
+        grad_clip: float = 10.0,
     ) -> None:
+        # Gradient-norm clip: prevents the exploding-gradient NaN divergence that killed 4/5
+        # server seeds (reinit critic can produce large early gradients).
+        self.grad_clip = float(grad_clip)
+        # use_teacher=False disables teacher replay + behavior loss entirely (pure reinit-critic
+        # co-training). Needed e.g. for the 11 V experiment, where the 6 V-optimal teacher actions
+        # over-actuate at higher gain and would fight the correct adaptation.
+        self.use_teacher = bool(use_teacher)
         data = np.load(teacher_data_path)
         required = ("observations", "actions", "next_observations", "rewards", "dones")
         missing = [key for key in required if key not in data]
@@ -35,13 +45,14 @@ class RetentionTQC(TQC):
         self.actor_start_steps = int(actor_start_steps)
         self.teacher_coef = float(teacher_coef)
         self.teacher_fraction = float(teacher_fraction)
+        self.teacher_target_ratio = teacher_target_ratio
         if not 0.0 < self.teacher_fraction < 1.0:
             raise ValueError("teacher_fraction must be between zero and one")
         print(
             f"[retention] teacher transitions={lengths['observations']} "
             f"teacher_fraction={self.teacher_fraction:.2f} actor_start={self.actor_start_steps} "
             f"actor_lr={self.actor_finetune_lr:g} critic_lr={self.critic_finetune_lr:g} "
-            f"teacher_coef={self.teacher_coef:g}",
+            f"teacher_coef={self.teacher_coef:g} use_teacher={self.use_teacher}",
             flush=True,
         )
 
@@ -82,16 +93,23 @@ class RetentionTQC(TQC):
 
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses, teacher_losses = [], [], []
+        rl_actor_losses, teacher_contributions, effective_teacher_coefs = [], [], []
+        log_probs, next_log_probs = [], []
         actor_enabled = self.num_timesteps >= self.actor_start_steps
 
         for gradient_step in range(gradient_steps):
-            teacher_batch_size = int(round(batch_size * self.teacher_fraction))
+            use_teacher = getattr(self, "use_teacher", True)
+            teacher_batch_size = int(round(batch_size * self.teacher_fraction)) if use_teacher else 0
             online_batch_size = batch_size - teacher_batch_size
             online_data = self.replay_buffer.sample(  # type: ignore[union-attr]
                 online_batch_size, env=self._vec_normalize_env
             )
-            teacher_data = self._teacher_sample(teacher_batch_size)
-            replay_data = self._join(online_data, teacher_data)
+            if use_teacher:
+                teacher_data = self._teacher_sample(teacher_batch_size)
+                replay_data = self._join(online_data, teacher_data)
+            else:
+                teacher_data = None
+                replay_data = online_data
             actual_batch_size = replay_data.observations.shape[0]
             discounts = replay_data.discounts if replay_data.discounts is not None else self.gamma
 
@@ -100,6 +118,7 @@ class RetentionTQC(TQC):
 
             actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
             log_prob = log_prob.reshape(-1, 1)
+            log_probs.append(log_prob.mean().item())
             ent_coef_loss = None
             if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
                 ent_coef = th.exp(self.log_ent_coef.detach())
@@ -116,6 +135,7 @@ class RetentionTQC(TQC):
 
             with th.no_grad():
                 next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
+                next_log_probs.append(next_log_prob.mean().item())
                 next_quantiles = self.critic_target(replay_data.next_observations, next_actions)
                 n_target_quantiles = (
                     self.critic.quantiles_total
@@ -137,6 +157,7 @@ class RetentionTQC(TQC):
             critic_losses.append(critic_loss.item())
             self.critic.optimizer.zero_grad()
             critic_loss.backward()
+            th.nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip)
             self.critic.optimizer.step()
 
             if actor_enabled:
@@ -144,13 +165,30 @@ class RetentionTQC(TQC):
                     dim=1, keepdim=True
                 )
                 rl_actor_loss = (ent_coef * log_prob - qf_pi).mean()
-                student_teacher_actions = self.actor(teacher_data.observations, deterministic=True)
-                teacher_loss = F.mse_loss(student_teacher_actions, teacher_data.actions)
-                actor_loss = rl_actor_loss + self.teacher_coef * teacher_loss
+                if use_teacher:
+                    student_teacher_actions = self.actor(teacher_data.observations, deterministic=True)
+                    teacher_loss = F.mse_loss(student_teacher_actions, teacher_data.actions)
+                    effective_teacher_coef = self.teacher_coef
+                    if self.teacher_target_ratio is not None:
+                        target = self.teacher_target_ratio * abs(float(rl_actor_loss.detach().item()))
+                        effective_teacher_coef = min(
+                            1e6, target / max(float(teacher_loss.detach().item()), 1e-8)
+                        )
+                    teacher_contribution = effective_teacher_coef * teacher_loss
+                    actor_loss = rl_actor_loss + teacher_contribution
+                else:
+                    teacher_loss = th.zeros((), device=self.device)
+                    effective_teacher_coef = 0.0
+                    teacher_contribution = th.zeros((), device=self.device)
+                    actor_loss = rl_actor_loss
                 actor_losses.append(actor_loss.item())
+                rl_actor_losses.append(rl_actor_loss.item())
                 teacher_losses.append(teacher_loss.item())
+                teacher_contributions.append(teacher_contribution.item())
+                effective_teacher_coefs.append(effective_teacher_coef)
                 self.actor.optimizer.zero_grad()
                 actor_loss.backward()
+                th.nn.utils.clip_grad_norm_(self.actor.parameters(), self.grad_clip)
                 self.actor.optimizer.step()
 
             if gradient_step % self.target_update_interval == 0:
@@ -164,7 +202,23 @@ class RetentionTQC(TQC):
         self.logger.record("train/actor_loss", np.mean(actor_losses) if actor_losses else 0.0)
         self.logger.record("train/critic_loss", np.mean(critic_losses))
         self.logger.record("train/teacher_loss", np.mean(teacher_losses) if teacher_losses else 0.0)
+        self.logger.record(
+            "train/rl_actor_loss", np.mean(rl_actor_losses) if rl_actor_losses else 0.0
+        )
+        self.logger.record(
+            "train/teacher_contribution",
+            np.mean(teacher_contributions) if teacher_contributions else 0.0,
+        )
+        self.logger.record(
+            "train/effective_teacher_coef",
+            np.mean(effective_teacher_coefs) if effective_teacher_coefs else 0.0,
+        )
         self.logger.record("train/actor_learning_rate", self.actor_finetune_lr)
         self.logger.record("train/critic_learning_rate", self.critic_finetune_lr)
+        self.logger.record("train/log_prob", np.mean(log_probs) if log_probs else 0.0)
+        self.logger.record("train/next_log_prob", np.mean(next_log_probs) if next_log_probs else 0.0)
+        # soft-value penalty subtracted in the Bellman target each step (ent_coef * next_log_prob)
+        soft_penalty = (np.mean(ent_coefs) * np.mean(next_log_probs)) if next_log_probs else 0.0
+        self.logger.record("train/soft_value_penalty", soft_penalty)
         if ent_coef_losses:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))

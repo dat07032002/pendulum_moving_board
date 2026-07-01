@@ -36,6 +36,17 @@ BETA_SCALE = 0.6     # board-tilt normalizer (~just above +-30 deg = 0.52 rad)
 BETADOT_SCALE = 3.0  # board-tilt-rate normalizer
 ARM_LIMIT = np.pi    # +-180 deg
 IMU_DECIM = 1        # BNO086 over I2C @ 200 Hz -> refresh beta every tick (matches the loop)
+DR_COMPONENTS = (
+    "motor_gear",
+    "arm_damping",
+    "pole_damping",
+    "arm_friction",
+    "pole_friction",
+    "pole_inertia",
+    "obs_noise",
+    "action_delay",
+    "imu_noise",
+)
 
 
 class FurutaEnv(gym.Env):
@@ -78,6 +89,7 @@ class FurutaEnv(gym.Env):
                                          # too aggressive -> stacked impossible multi-corner plants)
         self.dr_probability = 1.0        # fraction of episodes with plant DR; rest rehearse clean
         self.dr_scale = 1.0              # interpolate nominal -> sampled full-range parameters
+        self.dr_components = None        # None = all; otherwise iterable of DR_COMPONENTS names
         self.arm_envelope_w = 0.0        # >90deg arm penalty (0 = deployed-v1 behavior; off here)
         self.arm_center_w = 0.20         # arm-centering (phi/pi)^2 weight; LOWER it to allow the
                                          # arm to pump for swing-up (0.20 strangled it; ~0.02 frees it)
@@ -95,6 +107,9 @@ class FurutaEnv(gym.Env):
         self.observation_space = spaces.Box(-np.inf, np.inf, (8,), np.float32)
 
     # ---- domain randomization ----
+    def _dr_enabled(self, name):
+        return self.dr_components is None or name in self.dr_components
+
     def _randomize(self):
         rng = self.np_random
         self._dr_active = False
@@ -111,16 +126,46 @@ class FurutaEnv(gym.Env):
         def blend(nominal, sampled):
             return nominal + scale * (sampled - nominal)
 
-        self.model.actuator_gear[0, 0] = blend(self.nom["gear"], u(0.010, 0.016))
-        self.model.dof_damping[self.dadr_a] = blend(self.nom["dmp_a"], u(3e-4, 10e-4))
-        self.model.dof_damping[self.dadr_p] = blend(self.nom["dmp_p"], u(2e-5, 1.0e-4))
-        self.model.dof_frictionloss[self.dadr_a] = blend(self.nom["fr_a"], u(4e-3, 8e-3))
-        self.model.dof_frictionloss[self.dadr_p] = blend(self.nom["fr_p"], u(0.2e-3, 0.6e-3))
-        bp = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "pole")
-        self.model.body_inertia[bp] = self.nom["inertia_p"] * blend(1.0, u(0.92, 1.08))
-        self._obs_noise = scale * rng.uniform(0.0, 0.01)
+        # Always consume every random draw, even when a component is disabled. This keeps initial
+        # states and tilt trajectories exactly paired across component-ablation evaluations.
+        gear = u(0.010, 0.016)
+        dmp_a = u(3e-4, 10e-4)
+        dmp_p = u(2e-5, 1.0e-4)
+        fr_a = u(4e-3, 8e-3)
+        fr_p = u(0.2e-3, 0.6e-3)
+        inertia_scale = u(0.92, 1.08)
+        obs_noise = rng.uniform(0.0, 0.01)
         sampled_delay = int(rng.integers(1, 4))
-        self._delay = int(round(1 + scale * (sampled_delay - 1)))
+
+        self.model.actuator_gear[0, 0] = (
+            blend(self.nom["gear"], gear) if self._dr_enabled("motor_gear") else self.nom["gear"]
+        )
+        self.model.dof_damping[self.dadr_a] = (
+            blend(self.nom["dmp_a"], dmp_a)
+            if self._dr_enabled("arm_damping") else self.nom["dmp_a"]
+        )
+        self.model.dof_damping[self.dadr_p] = (
+            blend(self.nom["dmp_p"], dmp_p)
+            if self._dr_enabled("pole_damping") else self.nom["dmp_p"]
+        )
+        self.model.dof_frictionloss[self.dadr_a] = (
+            blend(self.nom["fr_a"], fr_a)
+            if self._dr_enabled("arm_friction") else self.nom["fr_a"]
+        )
+        self.model.dof_frictionloss[self.dadr_p] = (
+            blend(self.nom["fr_p"], fr_p)
+            if self._dr_enabled("pole_friction") else self.nom["fr_p"]
+        )
+        bp = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "pole")
+        self.model.body_inertia[bp] = (
+            self.nom["inertia_p"] * blend(1.0, inertia_scale)
+            if self._dr_enabled("pole_inertia") else self.nom["inertia_p"]
+        )
+        self._obs_noise = scale * obs_noise if self._dr_enabled("obs_noise") else 0.0
+        self._delay = (
+            int(round(1 + scale * (sampled_delay - 1)))
+            if self._dr_enabled("action_delay") else 1
+        )
 
     def _restore_nominal(self):
         self.model.actuator_gear[0, 0] = self.nom["gear"]
@@ -225,8 +270,13 @@ class FurutaEnv(gym.Env):
         self._imu_ctr += 1
         if self._imu_ctr >= IMU_DECIM:
             self._imu_ctr = 0
-            nb = self.beta_noise * self.dr_scale * self.np_random.standard_normal() \
-                if self._dr_active else 0.0
+            # Consume the noise draw whenever DR is active so disabling IMU noise does not alter
+            # the shared RNG stream used by the random tilt generator.
+            noise_draw = self.np_random.standard_normal() if self._dr_active else 0.0
+            nb = (
+                self.beta_noise * self.dr_scale * noise_draw
+                if self._dr_active and self._dr_enabled("imu_noise") else 0.0
+            )
             self._beta_meas = float(self.data.qpos[self.qadr_t]) + nb
             self._betad_meas = float(self.data.qvel[self.dadr_t])
 

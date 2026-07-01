@@ -7,3 +7,5 @@ Pillow==12.2.0
 
 # Install a platform-appropriate PyTorch build separately.
 # The training server currently uses torch 2.6.0 with CUDA 12.4.
+matplotlib==3.10.7
+fpdf2==2.8.7
