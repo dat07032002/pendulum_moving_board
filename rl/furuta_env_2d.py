@@ -65,6 +65,12 @@ class Furuta2DEnv(FurutaEnv):
         self.v_max = float(os.environ.get("FURUTA_VMAX", V_MAX))
         self.model.actuator_ctrlrange[self.act_motor] = [-self.v_max, self.v_max]
 
+        # Upright tightness. `up` is cos(pole angle from true vertical); the success/balanced gate
+        # and the +2 bonus fire above these thresholds. Default 0.90 (~26 deg) / 0.92 (~23 deg).
+        # Override with FURUTA_UP_THRESH to demand a tighter upright hold (e.g. 0.95 ~= 18 deg).
+        self.up_thresh = float(os.environ.get("FURUTA_UP_THRESH", 0.90))
+        self.up_bonus = min(0.99, self.up_thresh + 0.02)
+
         bp = self.bid_pole
         self.nom = dict(
             gear=float(self.model.actuator_gear[self.act_motor, 0]),
@@ -198,11 +204,11 @@ class Furuta2DEnv(FurutaEnv):
         if up > 0.5:
             reward -= 0.01 * thd**2
         arm_ok = self.arm_limit is None or abs(phi) < np.pi / 2
-        if up > 0.92 and abs(thd) < 3.0 and arm_ok:
+        if up > self.up_bonus and abs(thd) < 3.0 and arm_ok:
             reward += 2.0
         self.prev_action = a
 
-        balanced = up > 0.9 and abs(thd) < 4.0 and arm_ok
+        balanced = up > self.up_thresh and abs(thd) < 4.0 and arm_ok
         self._balance_window.append(balanced)
         if balanced:
             self._up_streak += 1
