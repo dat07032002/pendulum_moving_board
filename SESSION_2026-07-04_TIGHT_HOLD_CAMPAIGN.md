@@ -78,6 +78,23 @@ electrical/FOC/filter chain). Consistency check for the fix in flight: a 26 Hz +
 requires ~8.2 V/tick of slew; the 3 V/tick limiter caps it at ~3.7 V amplitude, and the
 tight7d policies are being trained WITH that actuator so they will not fight it.
 
+## Overnight result: hard slew limiter falsified, lag model validated
+
+- **tight7d (slew 3 V/tick) collapsed all 3 seeds** (final targets 0.00-0.25, up to 99 cable
+  hits/eval, no safe checkpoint). tight7d_s0 did reach m|da| 0.076 (7x smoother) but lost
+  balance competence. **tight7e (slew+lag) collapsed both seeds.** Diagnosis: the hard limiter
+  (a) removes the warm start's fast-reversal strategy without a bridge, and (b) hides actuator
+  state from the policy (commanded vs applied V diverge persistently) — a partially observed
+  MDP, the same failure class as the delay-continuation collapse.
+- **Decisive counter-test**: tight7c_s1 evaluated in sim WITH 6 ms actuator lag reproduces the
+  hardware pathology exactly — m|da| 0.2 -> 0.44-1.08 (limit cycle appears in sim), success
+  degrades, critic blind (Q 330 vs RTG 127). The lag model is the missing plant term.
+- **Pivot: tight7f (lag-only, NO slew)** — 5 seeds: 3x action_rate_w 0.3, 2x 0.15 (hedge),
+  lag DR 3-9 ms, same recipe otherwise. The action-rate penalty now sees the limit cycle in
+  training and the actuator stays fully observable. NO firmware pairing needed (the rig has
+  the lag physically; the compiled-in RL_SLEW_V_PER_TICK path stays dormant unless a header
+  defines it). Screens auto-run on the 6 ms plant, seed block 620000, incl. tight7c_s1 ref.
+
 ## Next steps
 
 1. Review tight7d screens; winner -> 500-ep finals (slewed plant, nominal + DR).
