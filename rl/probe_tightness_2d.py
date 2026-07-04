@@ -20,10 +20,8 @@ from furuta_env_2d import Furuta2DEnv
 SAT = 0.95
 
 
-def run(model, episodes, seed0, angle_deg=15.0, speed=120.0):
+def run(model, episodes, seed0, angle_deg=10.0, speed=60.0):
     env = Furuta2DEnv(randomize=False, max_seconds=10.0)
-    env.arm_limit = None
-    env.arm_center_w = 0.0
     env.init_angle_max = 0.25  # start near upright: focus on HOLDING, not swing-up
     env.tilt_axis_mode = "both"
     env.tilt_amp = np.deg2rad(angle_deg)

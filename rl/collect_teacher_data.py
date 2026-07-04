@@ -31,6 +31,7 @@ def main() -> None:
         env.init_angle_max = np.pi
         env.tilt_amp = float(np.deg2rad(args.tilt_deg))
         env.arm_limit = None
+        env.success_arm_limit = None
         env.arm_center_w = 0.0
         obs, _ = env.reset(seed=args.seed + attempts)
         attempts += 1

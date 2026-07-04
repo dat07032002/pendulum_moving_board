@@ -20,7 +20,6 @@ import os
 import numpy as np
 import torch.nn as nn
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from probe_capability_2d import run_condition
@@ -31,17 +30,14 @@ HERE = os.path.dirname(__file__)
 
 PROBE_CONDS = [
     ("both", 0.0, 0.0),
-    ("pitch", 10.0, 90.0),
-    ("pitch", 15.0, 120.0),
+    ("pitch", 10.0, 45.0),
+    ("pitch", 10.0, 60.0),
 ]
 
 
 def make_env():
     def factory():
-        return Monitor(
-            CurriculumMix2DEnv(),
-            info_keywords=("is_success", "is_catch_success"),
-        )
+        return CurriculumMix2DEnv()
 
     return factory
 
@@ -51,7 +47,10 @@ def reinit_critic(model: RetentionTQC) -> None:
         if isinstance(module, nn.Linear):
             module.reset_parameters()
     model.critic_target.load_state_dict(model.critic.state_dict())
-    print("[warmup] critic re-initialized to fresh random weights", flush=True)
+    # The optimizer is loaded with the checkpoint. Keeping its Adam moments after
+    # replacing the weights is not a clean critic reset and can cause a large first update.
+    model.critic.optimizer.state.clear()
+    print("[warmup] critic weights, target, and optimizer state re-initialized", flush=True)
 
 
 class CalibrationLogger(BaseCallback):

@@ -31,15 +31,22 @@ class RetentionTQC(TQC):
         # co-training). Needed e.g. for the 11 V experiment, where the 6 V-optimal teacher actions
         # over-actuate at higher gain and would fight the correct adaptation.
         self.use_teacher = bool(use_teacher)
-        data = np.load(teacher_data_path)
         required = ("observations", "actions", "next_observations", "rewards", "dones")
-        missing = [key for key in required if key not in data]
-        if missing:
-            raise ValueError(f"teacher dataset missing arrays: {missing}")
-        lengths = {key: len(data[key]) for key in required}
-        if len(set(lengths.values())) != 1 or next(iter(lengths.values())) == 0:
-            raise ValueError(f"invalid teacher dataset lengths: {lengths}")
-        self.teacher_data = {key: np.asarray(data[key], dtype=np.float32) for key in required}
+        if self.use_teacher:
+            data = np.load(teacher_data_path)
+            missing = [key for key in required if key not in data]
+            if missing:
+                raise ValueError(f"teacher dataset missing arrays: {missing}")
+            lengths = {key: len(data[key]) for key in required}
+            if len(set(lengths.values())) != 1 or next(iter(lengths.values())) == 0:
+                raise ValueError(f"invalid teacher dataset lengths: {lengths}")
+            self.teacher_data = {
+                key: np.asarray(data[key], dtype=np.float32) for key in required
+            }
+            transition_count = lengths["observations"]
+        else:
+            self.teacher_data = {}
+            transition_count = 0
         self.actor_finetune_lr = float(actor_lr)
         self.critic_finetune_lr = float(critic_lr)
         self.actor_start_steps = int(actor_start_steps)
@@ -49,7 +56,7 @@ class RetentionTQC(TQC):
         if not 0.0 < self.teacher_fraction < 1.0:
             raise ValueError("teacher_fraction must be between zero and one")
         print(
-            f"[retention] teacher transitions={lengths['observations']} "
+            f"[retention] teacher transitions={transition_count} "
             f"teacher_fraction={self.teacher_fraction:.2f} actor_start={self.actor_start_steps} "
             f"actor_lr={self.actor_finetune_lr:g} critic_lr={self.critic_finetune_lr:g} "
             f"teacher_coef={self.teacher_coef:g} use_teacher={self.use_teacher}",

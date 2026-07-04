@@ -71,6 +71,7 @@ def evaluate_arm(model: TQC, args, arm_name: str, arm_limit: float | None) -> di
     base_env.p_corner = args.p_corner
     base_env.dr_components = args.dr_component_set
     base_env.arm_limit = arm_limit
+    base_env.success_arm_limit = None if arm_limit is None else np.pi / 2
     env = (
         ResidualActionWrapper(base_env, args.residual_base, args.residual_scale)
         if args.residual_base

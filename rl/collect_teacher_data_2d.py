@@ -20,8 +20,8 @@ def configure(env: Furuta2DEnv, profile: str, episode: int) -> None:
         env.tilt_amp = np.deg2rad(15.0)
     if profile == "roll":
         env.tilt_axis_mode = "roll"
-        env.tilt_speed_max = np.deg2rad(120.0)
-        env.tilt_accel_max = np.deg2rad(1200.0)
+        env.tilt_speed_max = np.deg2rad(60.0)
+        env.tilt_accel_max = np.deg2rad(600.0)
     elif profile == "slow_both":
         env.tilt_speed_max = np.deg2rad(60.0)
         env.tilt_accel_max = np.deg2rad(400.0)
@@ -40,6 +40,7 @@ def main() -> None:
     model = TQC.load(args.model, device="cpu")
     env = Furuta2DEnv(randomize=False, max_seconds=10.0)
     env.arm_limit = None
+    env.success_arm_limit = None
     env.arm_center_w = 0.0
     env.init_angle_max = np.pi
     profiles = ("level", "roll", "slow_both", "corners")

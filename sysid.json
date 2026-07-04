@@ -7,10 +7,10 @@
     "alpha_model": 196,
     "alpha_status": "validated_within_4pct",
     "friction_type": "coulomb",
-    "Tf_mNm": 0.7,
-    "deadband_deg": 4,
-    "eff_zeta": 0.16,
-    "note": "alpha confirmed 3x ~204; clean 45deg run gives Tf~0.7mNm deadband~4deg"
+    "Tf_mNm": 0.16497284803028325,
+    "deadband_deg": 1.0,
+    "eff_zeta": 0.023653196355373777,
+    "note": "new-bearing 20/35/45deg releases; 28 clean peak pairs; canonical values in friction_id"
   },
   "arm_id": {
     "foc_offset_fixed": "270->300, asymmetry 2x->1.0",
@@ -73,13 +73,13 @@
     "V_break": 0.23656344413757324
   },
   "friction_id": {
-    "rho": 0.898092628793845,
-    "C_deg": 4.07043248454059,
-    "zeta": 0.034212604161848625,
-    "b_theta": 5.06165542877801e-05,
-    "Tf": 0.00035281900168169107,
-    "alpha": 213.51226395001316,
-    "n_pairs": 15
+    "rho": 0.9283850497961329,
+    "C_deg": 1.9032728863494486,
+    "zeta": 0.023653196355373777,
+    "b_theta": 3.419889397852664e-05,
+    "Tf": 0.00016497284803028325,
+    "alpha": 203.9174463034992,
+    "n_pairs": 28
   },
   "latency": {
     "loop_ms_mean": 5.0,

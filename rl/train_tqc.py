@@ -59,6 +59,7 @@ def make_env(randomize=True, free_arm=False, residual_base=None, residual_scale=
         e = FurutaEnv(randomize=randomize)
         if free_arm:
             e.arm_limit = None          # remove the +-180deg cable termination (sim-only ceiling probe)
+            e.success_arm_limit = None
         if residual_base:
             e = ResidualActionWrapper(e, residual_base, residual_scale)
         return Monitor(e, info_keywords=("is_success", "is_catch_success"))

@@ -5,9 +5,13 @@ Keep a Furuta (rotary inverted) pendulum balanced **upright to true gravity-vert
 third project in a lineage: level ground → one-axis tilt → **two-axis tilt (this repo)**.
 
 **Read these first** for the full story and method rationale:
+- `SESSION_2026-07-03_DELAY_TRAINING_AND_DEPLOYMENT_HANDOFF.md` — current cable-safety and delay
+  results, deployment preparation, blockers, and exact continuation point.
 - `PROJECT_REPORT.pdf` — 2-page summary (methods + result figures).
 - `PROJECT_LINEAGE_METHODS_AND_LESSONS.md` — the complete method history, challenges, and lessons.
 - `STEP5_CRITIC_DIAGNOSIS.md`, `STEP6_SERVO_ENVELOPE_AND_PRODUCTION.md` — key diagnoses.
+- `SESSION_2026-07-01_RIG_IMU_SYSID.md` — latest rig bring-up, new-bearing sysid, BNO086 timing,
+  and calibrated 2D simulation state.
 
 ---
 
@@ -43,29 +47,39 @@ Quick sanity checks:
 ```bash
 python -m py_compile rl/*.py
 cd rl && python furuta_env_2d.py         # "Furuta2DEnv sanity check passed"
+cd .. && python rl/preflight_training.py # corrected plant/checkpoint/curriculum checks
 ```
 
 ---
 
 ## Run training (the validated recipe)
 
-The method (see the report): keep the warm-start **actor**, **re-initialize the critic**, do a
-**frozen-actor critic warm-up**, use **γ=0.99** and **gradient clipping**, climb a **gentle ±15°
-speed curriculum** with a **soft advancing gate**, and train **teacher-free at higher voltage**.
+The corrected-bearing experiment keeps the `up15_best` **actor**, re-initializes the critic and
+its optimizer state, does a frozen-actor critic warm-up, uses γ=0.99 and gradient clipping, and
+climbs a gentle **±10° / 60°/s-capped curriculum** with a **±10° upright gate**. It compares
+three cable-aware seeds against two free-arm seeds, teacher-free at 10 V.
 
 Launch **5 seeds** (one per GPU) at 10 V, from the `rl/` directory:
 ```bash
 cd rl
 for s in 0 1 2 3 4; do
-  FURUTA_VMAX=10 CUDA_VISIBLE_DEVICES=$s python train_phaseb_2d.py \
-    --tag v10_pm15_nt_s$s --seed $s --steps 900000 \
+  if [ "$s" -lt 3 ]; then
+    variant=cable; cable=360; success_arm=330
+  else
+    variant=free; cable=none; success_arm=none
+  fi
+  FURUTA_VMAX=10 FURUTA_UP_THRESH=0.984807753 \
+  FURUTA_CABLE_LIMIT_DEG=$cable FURUTA_SUCCESS_ARM_LIMIT_DEG=$success_arm \
+  FURUTA_ARM_CENTER_W=0.02 CUDA_VISIBLE_DEVICES=$s python train_phaseb_2d.py \
+    --warmstart models/up15_best.zip \
+    --tag pm10_60_up10_${variant}_s$s --seed $s --steps 900000 \
     --gamma 0.99 --warmup-steps 50000 --actor-lr 3e-5 \
-    --ladder pm15 --no-teacher > train_v10_s$s.log 2>&1 &
+    --ladder pm10_60 --no-teacher > train_pm10_60_${variant}_s$s.log 2>&1 &
 done
 ```
 
 Flags:
-- `--ladder pm15` targets the ±15° envelope; `pm10` is the conservative ±10° envelope.
+- `--ladder pm10_60` targets ±10° with a 60°/s reference cap.
 - `--no-teacher` for higher voltage (the 6 V teacher over-actuates at 10/11 V). At 6 V, **drop**
   `--no-teacher` and pass `--teacher-data teacher_2d_retention_100k.npz`.
 - Each run writes `best_stage_N.zip` and `final_model.zip` under `rl/models/<tag>/`, and logs its
@@ -73,15 +87,46 @@ Flags:
 
 A seed "finishes" (`done`) when it soft-passes the final curriculum stage.
 
+The cable-360 fine-tuning entry point trains only the required moving-board envelope; static
+corners are not a mastery target. Its lighter evaluator uses 60 target episodes, 20 episodes for
+each guard, five critic-calibration episodes, and evaluation every 50k steps. Two consecutive
+passing evaluations are required for mastery. Candidate screening remains 300 episodes per
+condition and final verification remains 500.
+
 ---
 
 ## Evaluate / verify
 
-500-episode verification across the speed envelope (**match the training voltage**):
+Candidate screening uses 300 episodes per condition across the speed envelope (**match the
+training voltage**). Re-run the selected deployment winner with 500 episodes per condition:
 ```bash
 cd rl
-FURUTA_VMAX=10 python verify_2d.py models/v10_best_s3.zip -n 500 --grid pm15 --out ../eval/verify_best
+FURUTA_VMAX=10 FURUTA_UP_THRESH=0.984807753 \
+FURUTA_CABLE_LIMIT_DEG=360 FURUTA_SUCCESS_ARM_LIMIT_DEG=330 FURUTA_ARM_CENTER_W=0.02 \
+python verify_2d.py models/pm10_60_up10_cable_sX/best_stage_6.zip \
+  -n 300 --grid pm10_60 --out ../eval/verify_pm10_60_cable
 ```
+
+Evaluate each free-arm seed twice: first under its training configuration, then with the hardware
+cable constraints imposed. The second result determines whether the free-arm policy is deployable:
+
+```bash
+# Native free-arm score
+FURUTA_VMAX=10 FURUTA_UP_THRESH=0.984807753 \
+FURUTA_CABLE_LIMIT_DEG=none FURUTA_SUCCESS_ARM_LIMIT_DEG=none FURUTA_ARM_CENTER_W=0.02 \
+python verify_2d.py models/pm10_60_up10_free_sX/best_stage_6.zip \
+  -n 300 --grid pm10_60 --out ../eval/verify_pm10_60_free
+
+# Same checkpoint with physical cable limits imposed
+FURUTA_VMAX=10 FURUTA_UP_THRESH=0.984807753 \
+FURUTA_CABLE_LIMIT_DEG=360 FURUTA_SUCCESS_ARM_LIMIT_DEG=330 FURUTA_ARM_CENTER_W=0.02 \
+python verify_2d.py models/pm10_60_up10_free_sX/best_stage_6.zip \
+  -n 300 --grid pm10_60 --out ../eval/verify_pm10_60_free_imposed_cable
+```
+
+Compare sustained success together with arm-angle p95/max, time outside ±330°, and cable-limit
+hits. A free-arm seed is not a deployment winner if its apparent success depends on crossing the
+physical cable boundary.
 Other diagnostics:
 - `probe_capability_2d.py <model>` — critic calibration (Q vs return-to-go) + action-saturation.
 - `eval_dr_2d.py <model>` — robustness under plant domain randomization (isolates action delay).
@@ -114,13 +159,13 @@ cd .. && python make_report_pdf.py       # -> PROJECT_REPORT.pdf  (needs fpdf2 +
 | `rl/train_phaseb_2d.py` | **training entry point** (the validated recipe + curriculum) |
 | `rl/retention_tqc.py` | `RetentionTQC`: critic reset, frozen-actor warm-up, separate LRs, teacher, grad clip |
 | `rl/critic_warmup_2d.py` | frozen-actor critic-calibration diagnostic |
-| `rl/verify_2d.py` | 500-episode verification harness (Wilson CIs, calibration gate) |
+| `rl/verify_2d.py` | 300-episode candidate screening / 500-episode final verification harness |
 | `rl/probe_capability_2d.py`, `rl/eval_dr_2d.py` | capability / DR-robustness probes |
 | `rl/transfer_1d_to_2d.py` | build the 10-D warm start from the 1D master |
 | `rl/collect_teacher_data_2d.py` | build the retention teacher dataset |
 | `rl/make_plots_2d.py`, `make_report_pdf.py` | figures + 2-page report |
 | `rl/furuta_env.py`, `rl/tilt.py` | inherited 1D env/generator (base classes) |
-| `firmware/` | ESP32 firmware (currently the level-ground 6-D policy; extend to 10-D + IMU for hardware) |
+| `firmware/` | ESP32 firmware with 6-D legacy and 10-D BNO086 policy support; `rlcheck` validates observations with the motor off |
 | `cad/` | CAD (IMU + motor mounts) |
 
 Regenerate the warm start from the 1D master (optional):

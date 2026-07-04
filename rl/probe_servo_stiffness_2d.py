@@ -27,6 +27,7 @@ def set_stiffness(env: Furuta2DEnv, kp: float, kv: float) -> None:
 def run(model, kp, kv, episodes, seed0, angle_deg=15.0, speed=120.0, axis="pitch"):
     env = Furuta2DEnv(randomize=False, max_seconds=10.0)
     env.arm_limit = None
+    env.success_arm_limit = None
     env.arm_center_w = 0.0
     env.init_angle_max = np.pi
     env.tilt_axis_mode = axis

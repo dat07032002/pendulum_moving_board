@@ -32,23 +32,35 @@ def dev_from_hang(theta):
     return (theta - HANG + np.pi) % (2 * np.pi) - np.pi
 
 
-def capture_one(link, timeout=40.0):
-    """After Enter: wait for a steady hold, then a release; return (t, theta_unwrapped)."""
+def capture_one(link, target_deg, timeout=40.0):
+    """Show live angle, validate a steady target hold, then capture the release."""
     link.ser.reset_input_buffer()
     hold = None
+    last_print = 0.0
     t0 = time.time()
     while time.time() - t0 < timeout:
         d = link.read_log()
         if d is None:
             continue
-        if abs(np.rad2deg(dev_from_hang(d["theta"]))) > 12 and abs(d["theta_dot"]) < 0.4:
+        angle_deg = abs(np.rad2deg(dev_from_hang(d["theta"])))
+        on_target = abs(angle_deg - target_deg) <= 5.0
+        steady = abs(d["theta_dot"]) < 0.4
+        now = time.time()
+        if now - last_print >= 0.1:
+            held_s = 0.0 if hold is None else now - hold
+            print(f"\r    angle={angle_deg:5.1f} deg  target={target_deg:2.0f}±5  "
+                  f"hold={held_s:3.1f}/1.0 s", end="", flush=True)
+            last_print = now
+        if on_target and steady:
             hold = hold or time.time()
-            if time.time() - hold > 0.5:
+            if time.time() - hold >= 1.0:
                 break
         else:
             hold = None
     else:
+        print()
         return None
+    print("\n    target held — RELEASE NOW", flush=True)
     t1 = time.time()
     while time.time() - t1 < 15:
         d = link.read_log()
@@ -95,21 +107,28 @@ def main():
         link.stop_motor(); link.log_on(); link.drain_until_logging(3.0)
         for k in range(args.swings):
             tgt = targets[k] if k < len(targets) else 35
-            input(f"\n  swing {k+1}/{args.swings}: press Enter, then lift ~{tgt} deg, hold, release...")
-            cap = capture_one(link)
-            if cap is None:
-                print("    no clean release detected; repeating this swing.");
-                continue
-            t, y = cap
-            with open(f"swing{k+1}.csv", "w", newline="") as f:
-                w = csv.writer(f); w.writerow(["t", "theta"]); w.writerows(zip(t, y))
-            tms, amps = alternating_peaks(t, y)
-            # validate: need >=4 alternating peaks, monotonically decreasing
-            ok = len(amps) >= 4 and all(amps[i] > amps[i+1] for i in range(len(amps)-1))
-            print(f"    release={amps[0]:.0f} deg  peaks={[round(a,1) for a in amps[:6]]}  "
-                  f"{'OK' if ok else 'REJECTED (not clean) -> redo this angle'}")
-            if not ok:
-                continue
+            while True:
+                input(f"\n  swing {k+1}/{args.swings}: press Enter, then lift ~{tgt} deg, "
+                      "hold still >=1 s, release...")
+                cap = capture_one(link, tgt)
+                if cap is None:
+                    print("    no clean release detected; repeating this same angle.")
+                    continue
+                t, y = cap
+                tms, amps = alternating_peaks(t, y)
+                # validate: need >=4 alternating peaks, monotonically decreasing
+                ok = len(amps) >= 4 and all(amps[i] > amps[i+1] for i in range(len(amps)-1))
+                if not amps:
+                    print("    no valid alternating peaks; repeating this same angle.")
+                    continue
+                peak_text = [round(float(a), 1) for a in amps[:6]]
+                print(f"    release={amps[0]:.0f} deg  peaks={peak_text}  "
+                      f"{'OK' if ok else 'REJECTED (not clean) -> redo this angle'}")
+                if not ok:
+                    continue
+                with open(f"swing{k+1}.csv", "w", newline="") as f:
+                    w = csv.writer(f); w.writerow(["t", "theta"]); w.writerows(zip(t, y))
+                break
             for i in range(len(amps)-1):
                 pairs.append((amps[i], amps[i+1]))
             half_periods += list(np.diff(tms))

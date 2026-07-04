@@ -34,6 +34,7 @@ def make_env(w, randomize=False, init_angle=0.17, assist=0.0, free_arm=False):
         e.arm_envelope_w = w
         if free_arm:
             e.arm_limit = None                # remove the +-180deg cable termination (free hinge)
+            e.success_arm_limit = None
         return Monitor(e, info_keywords=("is_success",))
     return _f
 

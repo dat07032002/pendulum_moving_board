@@ -17,7 +17,10 @@ def main() -> None:
     parser.add_argument("output")
     parser.add_argument("--seed", type=int, default=50000)
     parser.add_argument("--tilt-deg", type=float, default=15.0)
+    parser.add_argument("--speed-deg", type=float, default=60.0)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--find-success", type=int, default=0,
+                        help="try up to N consecutive seeds and render the first success")
     args = parser.parse_args()
 
     model = TQC.load(args.model, device="cpu")
@@ -27,9 +30,24 @@ def main() -> None:
     env.tilt_amp = np.deg2rad(args.tilt_deg)
     env.tilt_amp_min_fraction = 1.0
     env.tilt_axis_mode = "both"
-    env.arm_limit = None
-    env.arm_center_w = 0.0
-    obs, _ = env.reset(seed=args.seed)
+    env.tilt_speed_min = np.deg2rad(args.speed_deg)
+    env.tilt_speed_max = np.deg2rad(args.speed_deg)
+    render_seed = args.seed
+    if args.find_success:
+        for candidate in range(args.seed, args.seed + args.find_success):
+            obs, _ = env.reset(seed=candidate)
+            terminated = truncated = False
+            info = {}
+            while not (terminated or truncated):
+                action, _ = model.predict(obs, deterministic=True)
+                obs, _, terminated, truncated, info = env.step(action)
+            if info.get("is_success", False):
+                render_seed = candidate
+                print(f"selected successful seed {render_seed}", flush=True)
+                break
+        else:
+            raise SystemExit(f"no successful rollout in {args.find_success} seeds")
+    obs, _ = env.reset(seed=render_seed)
 
     renderer = mujoco.Renderer(env.model, height=480, width=640)
     camera = mujoco.MjvCamera()

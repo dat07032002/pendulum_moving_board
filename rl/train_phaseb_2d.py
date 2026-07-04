@@ -14,8 +14,8 @@ Method:
   5. SOFT, ADVANCING curriculum gate (advance on a soft threshold OR timeout -> advance,
      never kill the seed). Retention and Q-vs-RTG calibration are logged every eval.
 
-The decisive question this answers: with a healthy critic, does fast-pitch success actually
-climb above the frozen warm-start baseline (pitch15/120 ~0.15, pitch10/120 ~0.55)?
+The current production target is +/-10 deg board motion, a 60 deg/s reference cap,
+and a +/-10 deg upright gate, with cable-aware/free-arm A/B seeds.
 """
 from __future__ import annotations
 
@@ -33,36 +33,37 @@ from train_tqc_2d import CurriculumMix2DEnv, evaluate, make_env
 
 HERE = os.path.dirname(__file__)
 
-# Target envelope (decided 2026-06-30): +/-10 deg up to 120 deg/s, both axes. The +/-15 deg
-# fast regime is at the +/-6 V feasibility edge (Phase B stalled at ~0.33 there), so it is NOT
-# a training target; +/-15 deg robustness margin is preserved only via the retention guards
-# (slow +/-15 deg and static +/-15 deg corners). Gentle speed increments keep success high so
-# the critic always has a mostly-succeeding regime to anchor on (the 1D stability trick).
+# Conservative +/-10 deg ladder, also capped at 90 deg/s.
 STAGES_B = (
     ("pitch", 10.0, 40.0, 60.0),
-    ("pitch", 10.0, 60.0, 80.0),
-    ("pitch", 10.0, 80.0, 100.0),
-    ("pitch", 10.0, 100.0, 120.0),
-    ("both", 10.0, 60.0, 90.0),
-    ("both", 10.0, 90.0, 120.0),
-    ("both", 10.0, 30.0, 120.0),
+    ("pitch", 10.0, 60.0, 75.0),
+    ("pitch", 10.0, 75.0, 90.0),
+    ("both", 10.0, 50.0, 70.0),
+    ("both", 10.0, 70.0, 90.0),
+    ("both", 10.0, 30.0, 90.0),
 )
 
-# +/-15 deg ladder for the higher-authority (11 V) experiment: does extra torque reclaim the
-# +/-15 deg fast-pitch regime that was infeasible at 6 V?
+# Legacy +/-15 deg / 90 deg/s ladder retained for historical comparisons.
 STAGES_PM15 = (
     ("pitch", 10.0, 40.0, 60.0),
-    ("pitch", 15.0, 60.0, 85.0),
-    ("pitch", 15.0, 85.0, 100.0),
-    ("pitch", 15.0, 100.0, 120.0),
-    ("both", 15.0, 60.0, 90.0),
-    ("both", 15.0, 90.0, 120.0),
-    ("both", 15.0, 30.0, 120.0),
+    ("pitch", 15.0, 60.0, 75.0),
+    ("pitch", 15.0, 75.0, 90.0),
+    ("both", 15.0, 50.0, 70.0),
+    ("both", 15.0, 70.0, 90.0),
+    ("both", 15.0, 30.0, 90.0),
 )
 
-LADDERS = {"pm10": STAGES_B, "pm15": STAGES_PM15}
+STAGES_PM10_60 = (
+    ("pitch", 5.0, 25.0, 40.0),
+    ("pitch", 10.0, 40.0, 50.0),
+    ("pitch", 10.0, 50.0, 60.0),
+    ("both", 5.0, 25.0, 40.0),
+    ("both", 10.0, 40.0, 50.0),
+    ("both", 10.0, 50.0, 60.0),
+    ("both", 10.0, 25.0, 60.0),
+)
 
-CALIB_CONDS = [("both", 0.0, 0.0), ("pitch", 10.0, 120.0), ("pitch", 15.0, 120.0)]
+LADDERS = {"pm10_60": STAGES_PM10_60, "pm10": STAGES_B, "pm15": STAGES_PM15}
 
 
 class PhaseBCurriculum(BaseCallback):
@@ -80,6 +81,8 @@ class PhaseBCurriculum(BaseCallback):
         self.stage_start = 0
         self.last_eval = 0
         self.best_target = -1.0
+        self.angle_cap = max(stage[1] for stage in stages)
+        self.speed_cap = max(stage[3] for stage in stages)
 
     def _apply(self):
         axis, angle, lo, hi = self.stages[self.stage]
@@ -89,6 +92,8 @@ class PhaseBCurriculum(BaseCallback):
             curriculum_angle_deg=angle,
             curriculum_speed_lo=lo,
             curriculum_speed_hi=hi,
+            retention_angle_deg=self.angle_cap,
+            retention_speed_deg=self.speed_cap,
         )
         print(f"[phaseb] stage={self.stage} axis={axis} angle={angle:g} "
               f"speed={lo:g}-{hi:g}", flush=True)
@@ -105,13 +110,27 @@ class PhaseBCurriculum(BaseCallback):
         seed = 80_000 + 1000 * self.stage
         target = evaluate(self.model, axis, angle, speed_hi, self.n_target, seed)
         level = evaluate(self.model, "both", 0.0, 0.0, self.n_guard, seed + 200)
-        roll = evaluate(self.model, "roll", 15.0, 120.0, self.n_guard, seed + 400)
-        slow = evaluate(self.model, "both", 15.0, 60.0, self.n_guard, seed + 600)
-        corners = evaluate(self.model, "both", 15.0, 40.0, self.n_guard, seed + 800, corner=True)
+        roll = evaluate(
+            self.model, "roll", self.angle_cap, self.speed_cap,
+            self.n_guard, seed + 400,
+        )
+        slow = evaluate(
+            self.model, "both", self.angle_cap, min(40.0, self.speed_cap),
+            self.n_guard, seed + 600,
+        )
+        corners = evaluate(
+            self.model, "both", self.angle_cap, min(40.0, self.speed_cap),
+            self.n_guard, seed + 800, corner=True,
+        )
         gamma = float(self.model.gamma)
+        calib_conds = [
+            ("both", 0.0, 0.0),
+            ("pitch", self.angle_cap, self.speed_cap),
+            ("both", self.angle_cap, self.speed_cap),
+        ]
         calib = " ".join(
             f"{ax}{an:g}/{sp:g}:Q={run_condition(self.model, ax, an, sp, 8, 96000, gamma)['q_mean']:.0f}"
-            for ax, an, sp in CALIB_CONDS
+            for ax, an, sp in calib_conds
         )
         print(f"[phaseb_eval] t={self.num_timesteps} stage={self.stage} "
               f"{'(warmup)' if frozen else ''} target={target:.2f} level={level:.2f} "
@@ -141,7 +160,7 @@ class PhaseBCurriculum(BaseCallback):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--warmstart", default="models/clean20_master_2d_warmstart.zip")
+    p.add_argument("--warmstart", default="models/up15_best.zip")
     p.add_argument("--teacher-data", default="teacher_2d_retention_100k.npz")
     p.add_argument("--tag", required=True)
     p.add_argument("--seed", type=int, default=0)
@@ -155,10 +174,12 @@ def main():
     p.add_argument("--eval-freq", type=int, default=25_000)
     p.add_argument("--soft-thresh", type=float, default=0.78)
     p.add_argument("--stage-timeout", type=int, default=200_000)
-    p.add_argument("--ladder", choices=tuple(LADDERS), default="pm10")
+    p.add_argument("--ladder", choices=tuple(LADDERS), default="pm10_60")
+    p.add_argument("--device", default="auto",
+                   help="PyTorch device (auto, cpu, cuda, cuda:0, ...)")
     p.add_argument("--no-teacher", action="store_true",
                    help="disable teacher retention (needed when the teacher's 6 V actions "
-                        "don't match the training dynamics, e.g. the 11 V experiment)")
+                        "don't match higher-voltage training dynamics)")
     args = p.parse_args()
 
     output = os.path.join(HERE, "models", args.tag)
@@ -167,7 +188,11 @@ def main():
         SubprocVecEnv([make_env() for _ in range(args.nenv)]),
         info_keywords=("is_success", "is_catch_success"),
     )
-    model = RetentionTQC.load(args.warmstart, env=env, device="cuda")
+    warmstart_path = (
+        args.warmstart if os.path.isabs(args.warmstart)
+        else os.path.join(HERE, args.warmstart)
+    )
+    model = RetentionTQC.load(warmstart_path, env=env, device=args.device)
     model.verbose = 1
     model.learning_starts = 5_000
     model.batch_size = 512

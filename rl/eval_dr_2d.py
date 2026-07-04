@@ -4,7 +4,7 @@ All 2D training was clean-plant, so this measures robustness to the inherited pl
 (motor gear, damping, friction, inertia, obs noise, action delay). It reports each condition
 under three settings so the action-delay bottleneck (the 1D finding) is isolated:
   clean      - no DR
-  full DR    - all components (gear/damping/friction/inertia/obs-noise/action-delay 1-3)
+  full DR    - all components (gear/damping/friction/inertia/obs-noise/action-delay 1-2)
   DR no-delay- full DR except action delay (held at 1 step)
 
 Set FURUTA_VMAX to match the model's training voltage (e.g. 11).
@@ -24,8 +24,8 @@ NO_DELAY = tuple(c for c in DR_COMPONENTS if c != "action_delay")
 
 CONDS = [
     ("level",           "both", 0.0,   0.0),
-    ("both +/-15 120",  "both", 15.0, 120.0),
-    ("pitch +/-15 120", "pitch", 15.0, 120.0),
+    ("both +/-10 60",   "both", 10.0, 60.0),
+    ("pitch +/-10 60",  "pitch", 10.0, 60.0),
 ]
 MODES = [
     ("clean",       False, None),
@@ -46,8 +46,6 @@ def wilson(k, n, z=1.96):
 
 def run(model, axis, angle, speed, randomize, dr_components, episodes, seed0):
     env = Furuta2DEnv(randomize=randomize, max_seconds=10.0)
-    env.arm_limit = None
-    env.arm_center_w = 0.0
     env.init_angle_max = np.pi
     env.dr_probability = 1.0
     env.dr_components = dr_components

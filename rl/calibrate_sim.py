@@ -1,9 +1,8 @@
 """
-calibrate_sim.py — Step 3: check the MuJoCo model reproduces the measured rig behavior.
+calibrate_sim.py — check the 2D MuJoCo model against the latest hardware sysid.
 
 Runs three experiments in sim and compares to the hardware system-ID:
-  1. Free-swing (pole released from ~42 deg): period + amplitude-decay fit
-     -> compare to alpha=214 (period 0.43 s) and the swing3.csv decay (rho~0.90, C~4 deg).
+  1. Free-swing: period + amplitude-decay fit against sysid.json friction_id.
   2. Arm coast-down (spin to 16 rad/s, cut power): dw/dt vs w fit
      -> compare to DAMPING/J=13.8, Tc/J=100.
   3. Free-spin terminal velocity vs voltage -> compare KM/DAMPING ~ 19 rad/s/V.
@@ -12,14 +11,21 @@ No hardware needed. Gate: sim matches the real curves within ~10%.
 """
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
 import mujoco
 
 HERE = os.path.dirname(__file__)
-M = mujoco.MjModel.from_xml_path(os.path.join(HERE, "furuta.xml"))
+ROOT = os.path.dirname(HERE)
+MODEL_PATH = os.path.join(HERE, "furuta_2d.xml")
+SYSID_PATH = os.path.join(ROOT, "sysid.json")
+M = mujoco.MjModel.from_xml_path(MODEL_PATH)
 D = mujoco.MjData(M)
+with open(SYSID_PATH) as f:
+    SYSID = json.load(f)
+REAL_POLE = SYSID["friction_id"]
 PA = M.jnt_qposadr[mujoco.mj_name2id(M, mujoco.mjtObj.mjOBJ_JOINT, "pole")]
 AA = M.jnt_qposadr[mujoco.mj_name2id(M, mujoco.mjtObj.mjOBJ_JOINT, "arm")]
 PV = M.jnt_dofadr[mujoco.mj_name2id(M, mujoco.mjtObj.mjOBJ_JOINT, "pole")]
@@ -78,20 +84,35 @@ def terminal(v, secs=1.5):
     return abs(D.qvel[AV])
 
 
-print("===== MuJoCo model validation =====\n")
+print("===== MuJoCo 2D model validation =====")
+print(f"model: {MODEL_PATH}")
+print(f"sysid: {SYSID_PATH}\n")
 
 # 1) free-swing
-t, th = free_swing(42.0)
+release_deg = 41.0
+t, th = free_swing(release_deg)
 tp, amps = peaks(t, th)
 half = np.diff(tp)
 per = 2 * np.median(half[half > 0.05])
 pairs = [(amps[i], amps[i+1]) for i in range(len(amps)-1) if amps[i] > amps[i+1]]
 A = np.array([p[0] for p in pairs]); An = np.array([p[1] for p in pairs])
 rho, negC = np.polyfit(A, An, 1)
+sim_C = -negC
+real_per = 2 * np.pi / np.sqrt(REAL_POLE["alpha"])
+period_err = abs(per / real_per - 1.0)
+rho_err = abs(rho / REAL_POLE["rho"] - 1.0)
+C_err = abs(sim_C / REAL_POLE["C_deg"] - 1.0)
+free_swing_pass = max(period_err, rho_err, C_err) <= 0.15
 print("1) FREE-SWING")
-print(f"   sim period   = {per*1e3:.0f} ms   (real ~430 ms, alpha {(2*np.pi/per)**2:.0f} vs 214)")
-print(f"   sim decay    = A_(n+1) = {rho:.3f}*A_n - {-negC:.2f} deg   (real swing3: 0.898, 4.07)")
-print(f"   sim peaks    = {[round(a,1) for a in amps[:6]]}")
+print(f"   release      = {release_deg:.1f} deg")
+print(f"   sim period   = {per*1e3:.0f} ms   real = {real_per*1e3:.0f} ms"
+      f"   error = {period_err*100:.1f}%")
+print(f"   sim decay    = A_(n+1) = {rho:.3f}*A_n - {sim_C:.2f} deg")
+print(f"   real decay   = A_(n+1) = {REAL_POLE['rho']:.3f}*A_n"
+      f" - {REAL_POLE['C_deg']:.2f} deg")
+print(f"   errors       = rho {rho_err*100:.1f}%   C {C_err*100:.1f}%")
+print(f"   sim peaks    = {[round(float(a), 1) for a in amps[:6]]}")
+print(f"   15% gate     = {'PASS' if free_swing_pass else 'FAIL'}")
 
 # 2) coast-down
 t, w = coast()

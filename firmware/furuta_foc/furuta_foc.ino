@@ -17,7 +17,7 @@
  *   k <4 gains>   set LQR gains
  *   tr <deg>      theta trim
  *   hand <deg>    handoff window
- *   log / nolog   toggle per-tick system-ID stream (log=[t_ms,phi,theta,phi_dot,theta_dot,V,theta_raw])
+ *   log / nolog   toggle per-tick system-ID + IMU stream
  *   params        print all parameters
  *   calhang/calup calibrate AS5600 (hanging / upright); saved to flash
  *   calfoc        re-run FOC calibration and save; clearcal wipes all cal
@@ -27,7 +27,11 @@
 #include <Wire.h>
 #include <math.h>
 #include <Preferences.h>   // NVS flash storage for FOC + AS5600 calibration
+#include <SparkFun_BNO08x_Arduino_Library.h>
 #include "policy_weights.h" // RL actor weights (rl/export_policy.py) -> MODE_RL on-chip MLP
+#ifndef RL_VMAX
+#define RL_VMAX 6.0f  // compatibility with old generated headers; new exports embed this explicitly
+#endif
 
 // === Pin definitions ===
 #define UH 25
@@ -58,6 +62,25 @@ Preferences prefs;                 // NVS namespace "furuta"
 int UPRIGHT_RAW = 0;
 const int AS5600_MAX_RAW_STEP = 768;
 
+// === BNO086 board IMU (dedicated Wire1 bus, mag-free fusion) ===
+const int BNO_SDA_PIN = 32;
+const int BNO_SCL_PIN = 33;
+const uint8_t BNO_ADDR_DEFAULT = 0x4B;  // SparkFun Qwiic default
+const uint8_t BNO_ADDR_ALT = 0x4A;
+const uint16_t BNO_REPORT_MS = 10;      // 100 Hz keeps both reports and control loop sustainable
+BNO08x bno;
+bool bno_valid = false;
+uint8_t bno_addr = 0;
+float bno_roll_raw = 0.0f, bno_pitch_raw = 0.0f;
+float bno_roll_zero = 0.0f, bno_pitch_zero = 0.0f;
+float bno_roll = 0.0f, bno_pitch = 0.0f;
+float bno_gyro_x = 0.0f, bno_gyro_y = 0.0f, bno_gyro_z = 0.0f;
+uint32_t bno_grv_seq = 0;
+uint32_t bno_gyro_seq = 0;
+uint32_t bno_grv_last_ms = 0;
+uint32_t bno_gyro_last_ms = 0;
+bool bno_tared = false;
+
 // === Sensor bus speeds (raised from defaults for lower read latency) ===
 const uint32_t SPI_HZ = 1000000;   // AS5048A SPI clock — 4 MHz corrupted drive reads; back to known-good 1 MHz
 const uint32_t I2C_HZ = 400000;    // AS5600 I2C clock (was 100 kHz; AS5600 not in the arm-torque path)
@@ -82,11 +105,12 @@ RunMode run_mode = MODE_IDLE;
 // RL on-chip policy state (MODE_RL): prev_action goes into the obs; phi_ref recenters the
 // arm at engage so the policy's arm-centering matches the sim (which starts arm near 0).
 float rl_prev_action = 0.0f;
+float rl_applied_v = 0.0f;   // slew-limited applied voltage state (RL_SLEW_V_PER_TICK)
 float rl_phi_ref = 0.0f;
-const float RL_ARM_LIMIT = 160.0f * PI / 180.0f;   // PC-in-loop used the same cable guard
-// Boot auto-start: a few seconds after power-on, engage MODE_RL automatically (swing-up from
-// hanging + balance), so it's plug-and-play. Any serial command cancels it (so you can stop it).
-bool rl_autostart_pending = true;
+const float RL_ARM_LIMIT = 330.0f * PI / 180.0f;   // unwind before the physical +/-360 deg limit
+const unsigned long RL_IMU_STALE_MS = 100;
+// Keep the motor idle after power-on. The RL policy is enabled only by the explicit `rl` command.
+bool rl_autostart_pending = false;
 unsigned long boot_ms = 0;
 const unsigned long RL_AUTOSTART_MS = 4000;        // delay before auto-engage
 // Auto-recovery: if the policy winds the arm to the cable guard, unwind it back to center and
@@ -104,6 +128,10 @@ float manual_voltage = 0.0f;
 
 float xhat[4] = {0, 0, 0, 0};
 float bal_prev_V = 0.0f;
+
+float rlForward(const float *obs);
+bool buildRLObservation(float *obs);
+bool rlIMUReady();
 
 // Last voltage actually commanded to the motor (set in driveVoltage, for logging)
 float last_V = 0.0f;
@@ -178,6 +206,127 @@ bool readAS5600(uint16_t &raw) {
   uint8_t h = Wire.read(), l = Wire.read();
   raw = ((h & 0x0F) << 8) | l;
   return true;
+}
+
+bool setBNOReports() {
+  bool grv_ok = bno.enableGameRotationVector(BNO_REPORT_MS);
+  bool gyro_ok = bno.enableGyro(BNO_REPORT_MS);
+  return grv_ok && gyro_ok;
+}
+
+void serviceBNO() {
+  if (!bno_valid) return;
+  if (bno.wasReset()) {
+    if (!setBNOReports()) bno_valid = false;
+  }
+  // Orientation and gyro arrive as separate reports. Drain a bounded number so
+  // neither report type builds a queue while preserving the control deadline.
+  for (int i = 0; i < 6; i++) {
+    if (!bno.getSensorEvent()) break;
+    uint8_t id = bno.getSensorEventID();
+    if (id == SENSOR_REPORTID_GAME_ROTATION_VECTOR) {
+      // SparkFun's getRoll/getPitch access the standard Rotation Vector union.
+      // For Game Rotation Vector, convert its dedicated quaternion explicitly.
+      float x = bno.getGameQuatI(), y = bno.getGameQuatJ();
+      float z = bno.getGameQuatK(), w = bno.getGameQuatReal();
+      float norm = sqrtf(w*w + x*x + y*y + z*z);
+      if (norm < 1e-6f) continue;
+      w /= norm; x /= norm; y /= norm; z /= norm;
+      bno_roll_raw = atan2f(2.0f * (w*x + y*z),
+                            1.0f - 2.0f * (x*x + y*y));
+      bno_pitch_raw = asinf(constrain(2.0f * (w*y - z*x), -1.0f, 1.0f));
+      bno_roll = wrapToPi(bno_roll_raw - bno_roll_zero);
+      bno_pitch = wrapToPi(bno_pitch_raw - bno_pitch_zero);
+      bno_grv_seq++;
+      bno_grv_last_ms = millis();
+    } else if (id == SENSOR_REPORTID_GYROSCOPE_CALIBRATED) {
+      bno_gyro_x = bno.getGyroX();
+      bno_gyro_y = bno.getGyroY();
+      bno_gyro_z = bno.getGyroZ();
+      bno_gyro_seq++;
+      bno_gyro_last_ms = millis();
+    }
+  }
+}
+
+bool tareBNOAtLevel(uint32_t duration_ms = 500) {
+  bno_tared = false;
+  if (!bno_valid) return false;
+  bno_roll_zero = 0.0f;
+  bno_pitch_zero = 0.0f;
+  float roll_sin_sum = 0.0f, roll_cos_sum = 0.0f;
+  float pitch_sin_sum = 0.0f, pitch_cos_sum = 0.0f;
+  uint32_t n = 0, last_seq = bno_grv_seq;
+  unsigned long deadline = millis() + duration_ms;
+  while ((long)(deadline - millis()) > 0) {
+    serviceBNO();
+    if (bno_grv_seq != last_seq) {
+      roll_sin_sum += sinf(bno_roll_raw);
+      roll_cos_sum += cosf(bno_roll_raw);
+      pitch_sin_sum += sinf(bno_pitch_raw);
+      pitch_cos_sum += cosf(bno_pitch_raw);
+      n++;
+      last_seq = bno_grv_seq;
+    }
+    delay(1);
+  }
+  if (n == 0) return false;
+  bno_roll_zero = atan2f(roll_sin_sum, roll_cos_sum);
+  bno_pitch_zero = atan2f(pitch_sin_sum, pitch_cos_sum);
+  bno_roll = wrapToPi(bno_roll_raw - bno_roll_zero);
+  bno_pitch = wrapToPi(bno_pitch_raw - bno_pitch_zero);
+  bno_tared = true;
+  return true;
+}
+
+// Standard I2C bus-clear: if a slave was mid-transaction when the MCU reset,
+// it can hold SDA low forever. Clock SCL up to 9 times until SDA releases,
+// then generate a STOP. Must run before Wire1.begin() claims the pins.
+void clearI2CBus(int sda, int scl) {
+  pinMode(sda, INPUT_PULLUP);
+  pinMode(scl, OUTPUT);
+  for (int i = 0; i < 9 && digitalRead(sda) == LOW; i++) {
+    digitalWrite(scl, LOW);  delayMicroseconds(5);
+    digitalWrite(scl, HIGH); delayMicroseconds(5);
+  }
+  // STOP condition: SDA low -> high while SCL high
+  pinMode(sda, OUTPUT);
+  digitalWrite(scl, HIGH);
+  digitalWrite(sda, LOW);  delayMicroseconds(5);
+  digitalWrite(sda, HIGH); delayMicroseconds(5);
+  pinMode(sda, INPUT_PULLUP);
+  pinMode(scl, INPUT_PULLUP);
+}
+
+void initBNO() {
+  clearI2CBus(BNO_SDA_PIN, BNO_SCL_PIN);
+  Wire1.begin(BNO_SDA_PIN, BNO_SCL_PIN);
+  Wire1.setClock(I2C_HZ);
+  Wire1.setTimeOut(5);
+  // The BNO086 is not reset by an ESP32 DTR/warm reboot and can be left wedged
+  // mid-report; begin() soft-resets it, but the first attempt after a warm boot
+  // often fails. Retry a few times before declaring it missing.
+  bno_valid = false;
+  for (int attempt = 0; attempt < 5 && !bno_valid; attempt++) {
+    if (attempt > 0) delay(200);
+    bno_valid = bno.begin(BNO_ADDR_DEFAULT, Wire1);
+    bno_addr = bno_valid ? BNO_ADDR_DEFAULT : 0;
+    if (!bno_valid) {
+      bno_valid = bno.begin(BNO_ADDR_ALT, Wire1);
+      bno_addr = bno_valid ? BNO_ADDR_ALT : 0;
+    }
+    Wire1.setClock(I2C_HZ);
+    Wire1.setTimeOut(5);
+    if (bno_valid && !setBNOReports()) bno_valid = false;
+  }
+  if (!bno_valid) {
+    Serial.println("# BNO086 missing or report setup failed");
+    return;
+  }
+  bool tare_ok = tareBNOAtLevel();
+  Serial.print("# BNO086 found @0x"); Serial.print(bno_addr, HEX);
+  Serial.print(" GRV+gyro="); Serial.print(1000 / BNO_REPORT_MS);
+  Serial.print("Hz boot_tare="); Serial.println(tare_ok ? "OK" : "FAILED");
 }
 
 // AS5600 register reads (for STATUS/AGC/MAGNITUDE health check).
@@ -430,13 +579,36 @@ void handleCommand(char *cmd) {
     Serial.println("# balance armed: lift the rod upright"); return;
   }
   if (!strcmp(cmd, "rl")) {
-    rl_prev_action = 0.0f; rl_phi_ref = phi_full;   // recenter arm at engage
+#if RL_OBS == 10
+    if (!rlIMUReady()) {
+      run_mode = MODE_IDLE; manual_voltage = 0.0f; motorOff();
+      Serial.println("# RL REFUSED: BNO086 must be valid, tared, and fresh; use 'imu'");
+      return;
+    }
+#endif
+    rl_prev_action = 0.0f; rl_applied_v = 0.0f; rl_phi_ref = phi_full;   // recenter arm at engage
     run_mode = MODE_RL;
     Serial.println("# RL policy on (on-chip MLP). hold rod upright; 's' to stop"); return;
   }
+  if (!strcmp(cmd, "rlcheck")) {
+    run_mode = MODE_IDLE; manual_voltage = 0.0f; motorOff();
+    float obs[RL_OBS];
+    if (!buildRLObservation(obs)) {
+      Serial.println("# RLCHECK FAILED: required sensor data is not ready");
+      return;
+    }
+    Serial.print("# RLCHECK obs=[");
+    for (int i = 0; i < RL_OBS; i++) {
+      Serial.print(obs[i], 6);
+      if (i + 1 < RL_OBS) Serial.print(",");
+    }
+    Serial.print("] action="); Serial.print(rlForward(obs), 6);
+    Serial.println(" motor=OFF");
+    return;
+  }
   if (!strcmp(cmd, "log")) {
     stream_log = true;
-    Serial.println("# log on: log=[t_ms,phi,theta,phi_dot,theta_dot,V,theta_raw]"); return;
+    Serial.println("# log on: log=[t_ms,phi,theta,phi_dot,theta_dot,V,theta_raw,imu_roll,imu_pitch,gyro_x,gyro_y,gyro_z,imu_seq]"); return;
   }
   if (!strcmp(cmd, "nolog")) {
     stream_log = false;
@@ -479,8 +651,8 @@ void handleCommand(char *cmd) {
     uint16_t mag = as5600Reg16(0x1B);
     Serial.print("# AS5600 STATUS=0x"); Serial.print(st, HEX);
     Serial.print(" MD="); Serial.print((st >> 5) & 1);
-    Serial.print(" ML(too-strong)="); Serial.print((st >> 4) & 1);
-    Serial.print(" MH(too-weak)="); Serial.print((st >> 3) & 1);
+    Serial.print(" ML(too-weak)="); Serial.print((st >> 4) & 1);
+    Serial.print(" MH(too-strong)="); Serial.print((st >> 3) & 1);
     Serial.print(" AGC="); Serial.print(agc); Serial.print("/128(3V3) MAG="); Serial.println(mag);
     uint16_t d = readAS5048Reg(0x3FFD), m2 = readAS5048Reg(0x3FFE);
     Serial.print("# AS5048A AGC="); Serial.print(d & 0xFF);
@@ -489,6 +661,31 @@ void handleCommand(char *cmd) {
     Serial.print(" CompLow(weak)="); Serial.print((d >> 10) & 1);
     Serial.print(" CompHigh(strong)="); Serial.print((d >> 11) & 1);
     Serial.print(" MAG="); Serial.println(m2);
+    return;
+  }
+  if (!strcmp(cmd, "imu")) {
+    Serial.print("# BNO086 valid="); Serial.print(bno_valid ? 1 : 0);
+    Serial.print(" addr=0x"); Serial.print(bno_addr, HEX);
+    Serial.print(" roll="); Serial.print(bno_roll * 57.2958f, 2);
+    Serial.print(" pitch="); Serial.print(bno_pitch * 57.2958f, 2);
+    Serial.print(" gyro="); Serial.print(bno_gyro_x, 4); Serial.print(",");
+    Serial.print(bno_gyro_y, 4); Serial.print(","); Serial.print(bno_gyro_z, 4);
+    Serial.print(" grv_seq="); Serial.print(bno_grv_seq);
+    Serial.print(" gyro_seq="); Serial.println(bno_gyro_seq);
+    return;
+  }
+  if (!strcmp(cmd, "imutare")) {
+    run_mode = MODE_IDLE; manual_voltage = 0.0f; motorOff();
+    Serial.println(tareBNOAtLevel() ? "# BNO086 level tare OK" : "# BNO086 level tare FAILED");
+    return;
+  }
+  if (!strcmp(cmd, "imuinit")) {
+    run_mode = MODE_IDLE; manual_voltage = 0.0f; motorOff();
+    if (bno_valid) {
+      Serial.println("# BNO086 already initialized");
+    } else {
+      initBNO();
+    }
     return;
   }
   if (!strcmp(cmd, "calfoc")) {
@@ -538,7 +735,7 @@ void handleCommand(char *cmd) {
     } else Serial.println("# usage: k <phi> <th> <phid> <thd>");
     return;
   }
-  Serial.println("# cmds: bal s t<V> k<4> tr<d> hand<d> vlim<V> log nolog raw health calhang calup calfoc clearcal params");
+  Serial.println("# cmds: rl rlcheck bal s t<V> k<4> tr<d> hand<d> vlim<V> log nolog raw health imu imuinit imutare calhang calup calfoc clearcal params");
 }
 
 // ============================================================
@@ -559,7 +756,7 @@ void setup() {
   pinMode(CS_PIN, OUTPUT); digitalWrite(CS_PIN, HIGH);
   SPI.begin(18, 19, 23, CS_PIN);
 
-  // I2C (AS5600)
+  // Primary I2C: AS5600 only. BNO086 uses Wire1 on GPIO32/33.
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(I2C_HZ);
   Wire.setTimeOut(5);
@@ -583,21 +780,25 @@ void setup() {
     Serial.println("# FOC cal saved to flash (won't sweep again on boot)");
   }
 
+  // BNO086 mag-free board orientation + calibrated gyro. Keep the board level
+  // during the boot-time average so roll=pitch=0 matches the physical platform.
+  initBNO();
+
   // Init sensors
   updateSensors(0);
   phi_full = 0;
   loop_us = micros();
 
-  Serial.println("# Furuta FOC Balance (GM3506 + AS5048A + AS5600)");
-  Serial.println("# cmds: rl | bal | t <V> | s | k <4> | tr <deg> | log | nolog | calhang | calup | calfoc | clearcal | params");
+  Serial.println("# Furuta FOC Balance (GM3506 + AS5048A + AS5600 + BNO086)");
+  Serial.println("# cmds: rl | rlcheck | bal | t <V> | s | k <4> | tr <deg> | log | nolog | imu | imuinit | imutare | calhang | calup | calfoc | clearcal | params");
   boot_ms = millis();
-  Serial.print("# RL auto-start in "); Serial.print(RL_AUTOSTART_MS / 1000);
-  Serial.println("s (any command cancels; 's' to stop)");
+  Serial.println("# RL auto-start disabled ('rl' enables the policy; 's' stops it)");
 }
 
 // ============================================================
-// RL on-chip policy: obs[6] -> H0 (relu) -> H1 (relu) -> mu -> clip -> tanh -> action
-// obs MUST match rl/furuta_env.py: [cos(th),sin(th),thd/15,clip(phi/pi,-2,2),phid/25,prev_a]
+// RL on-chip policy. For the 2-D rig, obs MUST match rl/furuta_env_2d.py:
+// [cos(th),sin(th),thd/15,clip(phi/pi,-2,2),phid/25,prev_a,
+//  clip(roll/rad(15),-2,2),clip(pitch/rad(15),-2,2),gyro_x/rad(80),gyro_y/rad(80)]
 // ============================================================
 float rlForward(const float *obs) {
   static float h0[RL_H0], h1[RL_H1];
@@ -613,9 +814,40 @@ float rlForward(const float *obs) {
   }
   float mu = RL_BM[0];                              // mu: (1 x H1)
   for (int j = 0; j < RL_H1; j++) mu += RL_WM[j] * h1[j];
-  if (mu >  RL_CLIP_MEAN) mu =  RL_CLIP_MEAN;       // gSDE mean clamp (matches export)
-  if (mu < -RL_CLIP_MEAN) mu = -RL_CLIP_MEAN;
+  if (RL_CLIP_MEAN > 0.0f) {
+    if (mu >  RL_CLIP_MEAN) mu =  RL_CLIP_MEAN;     // gSDE mean clamp (matches export)
+    if (mu < -RL_CLIP_MEAN) mu = -RL_CLIP_MEAN;
+  }
   return tanhf(mu);                                 // action in [-1,1]
+}
+
+bool rlIMUReady() {
+  unsigned long now = millis();
+  return bno_valid && bno_tared && bno_grv_seq > 0 && bno_gyro_seq > 0
+      && now - bno_grv_last_ms <= RL_IMU_STALE_MS
+      && now - bno_gyro_last_ms <= RL_IMU_STALE_MS;
+}
+
+bool buildRLObservation(float *obs) {
+  float phi = phi_full - rl_phi_ref;
+  obs[0] = cosf(theta_angle);
+  obs[1] = sinf(theta_angle);
+  obs[2] = theta_dot_filt / 15.0f;
+  obs[3] = constrain(phi / PI, -2.0f, 2.0f);
+  obs[4] = phi_dot_filt / 25.0f;
+  obs[5] = rl_prev_action;
+#if RL_OBS == 10
+  if (!rlIMUReady()) return false;
+  const float board_angle_scale = 15.0f * PI / 180.0f;
+  const float board_rate_scale = 80.0f * PI / 180.0f;
+  obs[6] = constrain(bno_roll / board_angle_scale, -2.0f, 2.0f);
+  obs[7] = constrain(bno_pitch / board_angle_scale, -2.0f, 2.0f);
+  obs[8] = bno_gyro_x / board_rate_scale;
+  obs[9] = bno_gyro_y / board_rate_scale;
+#elif RL_OBS != 6
+#error "Firmware supports only RL_OBS=6 (legacy) or RL_OBS=10 (two-axis BNO086)"
+#endif
+  return true;
 }
 
 void rlStep(float dt) {
@@ -624,16 +856,24 @@ void rlStep(float dt) {
     run_mode = MODE_RL_RECOVER; rl_recover_ms = millis(); motorOff();
     Serial.println("# RL: arm limit -> homing to recenter, will retry"); return;
   }
-  float obs[RL_OBS] = {
-    cosf(theta_angle), sinf(theta_angle),
-    theta_dot_filt / 15.0f,
-    constrain(phi / PI, -2.0f, 2.0f),
-    phi_dot_filt / 25.0f,
-    rl_prev_action,
-  };
+  float obs[RL_OBS];
+  if (!buildRLObservation(obs)) {
+    run_mode = MODE_IDLE; motorOff();
+    Serial.println("# RL STOP: required sensor data became invalid or stale");
+    return;
+  }
   float a = rlForward(obs);
   rl_prev_action = a;
-  driveVoltage(a * 6.0f);                            // V=6*action, driveVoltage clips to vlim
+  float v_cmd = a * RL_VMAX;                         // training voltage; driveVoltage clips to vlim
+#if defined(RL_SLEW_V_PER_TICK) && RL_OBS == 10
+  // Actuator slew limit, mirrored EXACTLY in Furuta2DEnv (FURUTA_SLEW_V_PER_TICK).
+  // Only deploy a policy trained with the same value. Breaks the +/-10 V 200 Hz
+  // bang-bang limit cycle (2026-07-04). rl_applied_v resets on engage/stop.
+  v_cmd = constrain(v_cmd, rl_applied_v - RL_SLEW_V_PER_TICK,
+                    rl_applied_v + RL_SLEW_V_PER_TICK);
+#endif
+  rl_applied_v = v_cmd;
+  driveVoltage(v_cmd);
 }
 
 // Homing after a cable-guard hit: gently drive the arm back to the engage center (phi->0),
@@ -641,7 +881,7 @@ void rlStep(float dt) {
 void rlRecoverStep(float dt) {
   float phi = phi_full - rl_phi_ref;
   if (fabsf(phi) < 0.35f && fabsf(phi_dot_filt) < 1.0f) {   // recentered + slow -> retry
-    motorOff(); rl_prev_action = 0.0f; run_mode = MODE_RL;
+    motorOff(); rl_prev_action = 0.0f; rl_applied_v = 0.0f; run_mode = MODE_RL;
     Serial.println("# recentered -> re-engaging RL"); return;
   }
   if (millis() - rl_recover_ms > RL_RECOVER_TIMEOUT_MS) {   // stuck -> give up
@@ -658,11 +898,12 @@ void loop() {
   loop_us = now;
 
   updateSensors(dt);
+  serviceBNO();
 
   // Boot auto-start: engage the RL policy a few seconds after power-on (plug-and-play).
   if (rl_autostart_pending && millis() - boot_ms > RL_AUTOSTART_MS) {
     rl_autostart_pending = false;
-    rl_prev_action = 0.0f; rl_phi_ref = phi_full;     // recenter arm at engage
+    rl_prev_action = 0.0f; rl_applied_v = 0.0f; rl_phi_ref = phi_full;     // recenter arm at engage
     run_mode = MODE_RL;
     Serial.println("# auto-start: RL swing-up + balance");
   }
@@ -695,6 +936,13 @@ void loop() {
     Serial.print(","); Serial.print(theta_dot_filt, 4);
     Serial.print(","); Serial.print(last_V, 4);
     Serial.print(","); Serial.print(as5600_last_raw);
+    Serial.print(","); Serial.print(bno_roll, 6);
+    Serial.print(","); Serial.print(bno_pitch, 6);
+    Serial.print(","); Serial.print(bno_gyro_x, 5);
+    Serial.print(","); Serial.print(bno_gyro_y, 5);
+    Serial.print(","); Serial.print(bno_gyro_z, 5);
+    Serial.print(","); Serial.print(bno_grv_seq);
+    Serial.print(","); Serial.print(bno_gyro_seq);
     Serial.println("]");
   }
 

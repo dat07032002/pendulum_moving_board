@@ -7,7 +7,8 @@ to sysid.json. The ID scripts (freeswing.py, arm_id.py, sign_check.py) all impor
 from here so the link behaviour and the log format live in exactly one place.
 
 The firmware streams, when `log` is enabled, one line per control tick:
-    log=[t_ms, phi, theta, phi_dot, theta_dot, V, theta_raw]
+    log=[t_ms, phi, theta, phi_dot, theta_dot, V, theta_raw,
+         imu_roll, imu_pitch, gyro_x, gyro_y, gyro_z, imu_seq, imu_gyro_seq]
 """
 from __future__ import annotations
 
@@ -24,9 +25,13 @@ PORT = "COM5"            # override with --port on any script
 BAUD = 921600            # must match Serial.begin() in furuta_foc.ino
 CONTROL_DT = 1.0 / 200.0  # firmware loop period (200 Hz)
 
-# log=[t_ms, phi, theta, phi_dot, theta_dot, V, theta_raw]  -> 7 fields
+# Legacy firmware produced 7 fields. BNO086 firmware appends 6 IMU fields.
 LOG_RE = re.compile(r"log=\[([^\]]+)\]")
-LOG_FIELDS = ("t_ms", "phi", "theta", "phi_dot", "theta_dot", "V", "theta_raw")
+LOG_FIELDS_LEGACY = ("t_ms", "phi", "theta", "phi_dot", "theta_dot", "V", "theta_raw")
+LOG_FIELDS_IMU = LOG_FIELDS_LEGACY + (
+    "imu_roll", "imu_pitch", "gyro_x", "gyro_y", "gyro_z", "imu_seq",
+)
+LOG_FIELDS_IMU_DUAL_SEQ = LOG_FIELDS_IMU + ("imu_gyro_seq",)
 AS5600_CPR = 4096
 
 _SYSID_FILE = os.path.join(os.path.dirname(__file__), "sysid.json")
@@ -48,20 +53,30 @@ def parse_log(line: str) -> dict | None:
     if not m:
         return None
     parts = m.group(1).split(",")
-    if len(parts) != len(LOG_FIELDS):
+    if len(parts) == len(LOG_FIELDS_LEGACY):
+        fields = LOG_FIELDS_LEGACY
+    elif len(parts) == len(LOG_FIELDS_IMU):
+        fields = LOG_FIELDS_IMU
+    elif len(parts) == len(LOG_FIELDS_IMU_DUAL_SEQ):
+        fields = LOG_FIELDS_IMU_DUAL_SEQ
+    else:
         return None
     try:
         vals = [float(p) for p in parts]
     except ValueError:
         return None
-    d = dict(zip(LOG_FIELDS, vals))
+    d = dict(zip(fields, vals))
     d["t_ms"] = int(d["t_ms"])
     d["theta_raw"] = int(d["theta_raw"])
+    if "imu_seq" in d:
+        d["imu_seq"] = int(d["imu_seq"])
+    if "imu_gyro_seq" in d:
+        d["imu_gyro_seq"] = int(d["imu_gyro_seq"])
     return d
 
 
 class Link:
-    """Thin serial wrapper: open, wait out the ESP32 reset, send commands, read logs.
+    """Thin serial wrapper: open without resetting the ESP32, send commands, read logs.
 
     Always call stop() (or use as a context manager) so the motor is disabled and
     the log stream is turned off on exit — even on Ctrl-C / exception.
@@ -69,25 +84,33 @@ class Link:
 
     def __init__(self, port: str | None = None, baud: int = BAUD, boot_timeout: float = 16.0):
         self.port = port or PORT
-        self.ser = serial.Serial(self.port, baud, timeout=0.2)
-        # Opening the port resets the ESP32, which then runs ~9 s of FOC
-        # calibration in setup() BEFORE loop() handles any commands. Wait for the
-        # boot banner so callers never send commands into a busy setup().
+        # Open with DTR/RTS inactive. Toggling those lines resets common ESP32
+        # dev boards; an MCU-only reset can leave a powered BNO086 out of sync.
+        self.ser = serial.Serial()
+        self.ser.port = self.port
+        self.ser.baudrate = baud
+        self.ser.timeout = 0.2
+        self.ser.dtr = False
+        self.ser.rts = False
+        self.ser.open()
         self._wait_ready(boot_timeout)
 
     def _wait_ready(self, timeout: float) -> bool:
-        """Block until the firmware prints its banner (post-calibration), or timeout."""
-        print(f"   waiting for ESP32 boot + FOC calibration (up to {timeout:.0f}s)...")
+        """Wait for a live parameter response or a post-boot banner."""
+        print(f"   connecting to live ESP32 (up to {timeout:.0f}s)...")
+        self.ser.reset_input_buffer()
+        self.ser.write(b"s\nparams\n")
+        self.ser.flush()
         t0 = time.perf_counter()
         while time.perf_counter() - t0 < timeout:
             raw = self.ser.readline()
             if not raw:
                 continue
             line = raw.decode("utf-8", errors="replace")
-            if "cmds:" in line or "Furuta FOC" in line:
+            if "cmds:" in line or "Furuta FOC" in line or line.startswith("# K="):
                 self.ser.reset_input_buffer()
                 return True
-        self.ser.reset_input_buffer()    # proceed anyway (board may not have reset)
+        self.ser.reset_input_buffer()    # proceed; caller will report if logging is unavailable
         return False
 
     # -- commands --

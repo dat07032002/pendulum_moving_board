@@ -125,6 +125,7 @@ def configure(env: Furuta2DEnv, condition: str, episode: int) -> None:
 def run(model, condition, episodes, seed0):
     env = Furuta2DEnv(randomize=False, max_seconds=10.0)
     env.arm_limit = None
+    env.success_arm_limit = None
     env.arm_center_w = 0.0
     env.init_angle_max = np.pi
     env.init_vel_assist = 0.0

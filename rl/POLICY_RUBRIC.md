@@ -1,5 +1,20 @@
 # Policy acceptance rubric — Furuta swing-up + balance (TQC)
 
+## Current corrected-bearing experiment (2026-07-01)
+
+- Command envelope: board tilt within +/-10 deg and reference speed no higher than 60 deg/s.
+- Upright requirement: pole remains within +/-10 deg of true gravity vertical.
+- Cable-aware seeds: hard termination at arm +/-360 deg; success is eligible only inside
+  +/-330 deg.
+- Free-arm seeds: no hard or success arm bound during training, but retain the same 0.02
+  arm-centering reward.
+- Screen each candidate over 300 fresh deterministic episodes on the `pm10_60` grid, then verify
+  the selected deployment winner over 500 fresh episodes per condition.
+- Re-evaluate free-arm candidates with the +/-360 deg hard and +/-330 deg success limits imposed.
+  A checkpoint that crosses the physical cable boundary is not deployable.
+- Report sustained success, catch success, arm p95/max, fraction outside +/-330 deg, cable hits,
+  action saturation, and action smoothness. Do not select on success rate alone.
+
 How we decide a trained policy is good enough to deploy. Sim passes are **necessary but not
 sufficient** — the real judge is the hardware. Use this for Step 6 (validate) before Step 7
 (deploy). Evaluate the **deterministic** policy (mean action, no exploration noise).
@@ -47,7 +62,7 @@ BNO086 IMU. The policy must balance to **true (gravity) vertical**, not base-fra
   *on top of* the existing plant DR (KM/friction/latency). Evaluate deterministically.
 - **True-vertical hold:** `true_up` (geometric, from `_true_up()`) stays high through the whole tilt
   trajectory — i.e. it tracks **gravity** vertical as the board moves, not base-frame "up".
-- **Arm stays within ±180°** the whole time (no cable-limit hits); auto-recovery is a backstop, not
+- **Arm stays within ±360°** the whole time (no cable-limit hits); auto-recovery is a backstop, not
   the plan.
 
 ## Pass 3-T — worst-orientation robustness
@@ -55,8 +70,8 @@ BNO086 IMU. The policy must balance to **true (gravity) vertical**, not base-fra
   per Phase 0). Don't only test the benign φ≈0 orientation.
 
 ## Pass 4-T — IMU / β sim-to-real readiness
-- **β-noise robustness:** holds with the modeled BNO086 fusion noise on β (and at the 200 Hz I²C
-  read rate; if hardware falls back to 100 Hz, retrain with `IMU_DECIM=2`).
+- **IMU robustness:** holds with the characterized BNO086 noise and independent 100 Hz
+  orientation/gyro reports sampled by the 200 Hz controller.
 - **β sign/scale alignment** at PC-in-loop: `+β` in firmware (IMU tilt direction) must match the sim
   convention, alongside the existing `sinθ`/`θ̇`/action sign checks. `β` is normalized by 0.6 rad.
 - **Use the IMU's mag-free fusion** (Game Rotation Vector / Gravity) — the motors disturb the

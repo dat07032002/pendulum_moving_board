@@ -10,8 +10,8 @@ class SmoothRandomTilt2D:
     def __init__(
         self,
         angle_max: float = np.deg2rad(15.0),
-        speed_max: float = np.deg2rad(120.0),
-        accel_max: float = np.deg2rad(1200.0),
+        speed_max: float = np.deg2rad(60.0),
+        accel_max: float = np.deg2rad(600.0),
         dt: float = 0.005,
         seed: int = 0,
         harmonics: int = 3,

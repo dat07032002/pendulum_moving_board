@@ -24,11 +24,9 @@ POLE = "#1a5cb0"    # controlled variable
 FILL = "#1a8c58"
 
 
-def make_trace(model, out_prefix, angle_deg=15.0, speed=120.0, seed0=50000, max_try=8):
+def make_trace(model, out_prefix, angle_deg=10.0, speed=60.0, seed0=50000, max_try=8):
     """Record one SUCCESSFUL episode and plot board motion vs pole-from-vertical."""
     env = Furuta2DEnv(randomize=False, max_seconds=10.0)
-    env.arm_limit = None
-    env.arm_center_w = 0.0
     env.init_angle_max = 0.25  # start near upright: a clean 'balancing through motion' trace
     env.tilt_axis_mode = "both"
     env.tilt_amp = np.deg2rad(angle_deg)

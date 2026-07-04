@@ -7,7 +7,6 @@ import os
 import numpy as np
 from sb3_contrib import TQC
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
-from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from furuta_env_2d import DT, Furuta2DEnv
@@ -18,13 +17,13 @@ from tilt_2d import CornerHoldTilt2D, SmoothRandomTilt2D
 HERE = os.path.dirname(__file__)
 # axis, angle deg, speed range deg/s
 STAGES = (
-    ("pitch", 5.0, 40.0, 60.0),
-    ("pitch", 10.0, 60.0, 90.0),
-    ("pitch", 15.0, 90.0, 120.0),
-    ("both", 5.0, 40.0, 60.0),
-    ("both", 10.0, 60.0, 90.0),
-    ("both", 15.0, 90.0, 120.0),
-    ("both", 15.0, 30.0, 120.0),
+    ("pitch", 5.0, 25.0, 40.0),
+    ("pitch", 10.0, 40.0, 50.0),
+    ("pitch", 10.0, 50.0, 60.0),
+    ("both", 5.0, 25.0, 40.0),
+    ("both", 10.0, 40.0, 50.0),
+    ("both", 10.0, 50.0, 60.0),
+    ("both", 10.0, 25.0, 60.0),
 )
 
 
@@ -33,13 +32,13 @@ class CurriculumMix2DEnv(Furuta2DEnv):
 
     def __init__(self):
         super().__init__(randomize=False, max_seconds=10.0)
-        self.arm_limit = None
-        self.arm_center_w = 0.0
         self.init_angle_max = np.pi
         self.curriculum_axis = "pitch"
         self.curriculum_angle_deg = 5.0
-        self.curriculum_speed_lo = 40.0
-        self.curriculum_speed_hi = 60.0
+        self.curriculum_speed_lo = 25.0
+        self.curriculum_speed_hi = 40.0
+        self.retention_angle_deg = 10.0
+        self.retention_speed_deg = 60.0
         self._training_profile = "current"
 
     def _generator(self, angle_deg, speed_deg):
@@ -69,11 +68,15 @@ class CurriculumMix2DEnv(Furuta2DEnv):
         elif draw < 0.80:
             self._training_profile = "roll_retention"
             self.tilt_axis_mode = "roll"
-            self.tilt_gen_2d = self._generator(15.0, 120.0)
+            self.tilt_gen_2d = self._generator(
+                self.retention_angle_deg, self.retention_speed_deg
+            )
         elif draw < 0.90:
             self._training_profile = "slow_both_retention"
             self.tilt_axis_mode = "both"
-            self.tilt_gen_2d = self._generator(15.0, 60.0)
+            self.tilt_gen_2d = self._generator(
+                self.retention_angle_deg, min(40.0, self.retention_speed_deg)
+            )
         else:
             self._training_profile = "corner_retention"
             signs = (
@@ -81,7 +84,9 @@ class CurriculumMix2DEnv(Furuta2DEnv):
                 1 if self.np_random.random() < 0.5 else -1,
             )
             self.tilt_axis_mode = "both"
-            self.tilt_gen_2d = CornerHoldTilt2D(np.deg2rad(15.0), signs, DT)
+            self.tilt_gen_2d = CornerHoldTilt2D(
+                np.deg2rad(self.retention_angle_deg), signs, DT
+            )
         return obs, info
 
     def step(self, action):
@@ -93,18 +98,13 @@ class CurriculumMix2DEnv(Furuta2DEnv):
 
 def make_env():
     def factory():
-        return Monitor(
-            CurriculumMix2DEnv(),
-            info_keywords=("is_success", "is_catch_success"),
-        )
+        return CurriculumMix2DEnv()
 
     return factory
 
 
 def evaluate(model, axis, angle_deg, speed_deg, episodes, seed0, corner=False):
     env = Furuta2DEnv(randomize=False, max_seconds=10.0)
-    env.arm_limit = None
-    env.arm_center_w = 0.0
     env.init_angle_max = np.pi
     successes = 0
     for episode in range(episodes):
@@ -141,6 +141,8 @@ class CurriculumAndRetentionEval(BaseCallback):
         self.last_eval = 0
         self.passes = 0
         self.best_target = -1.0
+        self.angle_cap = max(stage[1] for stage in STAGES)
+        self.speed_cap = max(stage[3] for stage in STAGES)
 
     def _apply(self):
         axis, angle, speed_lo, speed_hi = STAGES[self.stage]
@@ -150,6 +152,8 @@ class CurriculumAndRetentionEval(BaseCallback):
             curriculum_angle_deg=angle,
             curriculum_speed_lo=speed_lo,
             curriculum_speed_hi=speed_hi,
+            retention_angle_deg=self.angle_cap,
+            retention_speed_deg=self.speed_cap,
         )
         print(
             f"[2d_curriculum] stage={self.stage} axis={axis} angle={angle:g} "
@@ -170,10 +174,17 @@ class CurriculumAndRetentionEval(BaseCallback):
             self.model, axis, angle, speed_hi, self.n_target, seed
         )
         level = evaluate(self.model, "both", 0.0, 0.0, self.n_guard, seed + 200)
-        roll = evaluate(self.model, "roll", 15.0, 120.0, self.n_guard, seed + 400)
-        slow = evaluate(self.model, "both", 15.0, 60.0, self.n_guard, seed + 600)
+        roll = evaluate(
+            self.model, "roll", self.angle_cap, self.speed_cap,
+            self.n_guard, seed + 400,
+        )
+        slow = evaluate(
+            self.model, "both", self.angle_cap, min(40.0, self.speed_cap),
+            self.n_guard, seed + 600,
+        )
         corners = evaluate(
-            self.model, "both", 15.0, 40.0, self.n_guard, seed + 800, corner=True
+            self.model, "both", self.angle_cap, min(40.0, self.speed_cap),
+            self.n_guard, seed + 800, corner=True
         )
         print(
             f"[2d_eval] t={self.num_timesteps} stage={self.stage} target={target:.2f} "

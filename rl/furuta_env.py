@@ -7,7 +7,7 @@ Wraps the MuJoCo model (furuta.xml) and matches the real firmware:
   - velocities EMA-filtered (alpha=0.5, like the firmware) before going into the obs
   - obs = [cos(theta_up), sin(theta_up), theta_dot/15, phi/pi, phi_dot/25]  (+ sensor noise)
     where theta_up = pole - pi  (0 = upright, +-pi = hanging)
-  - hard +-180 deg arm limit -> terminate + penalty (the cable)
+  - hard physical arm limit -> terminate + penalty (configured for the cable)
 
 Domain randomization (per episode) covers the measured sim-to-real uncertainty (esp. the
 ~2x motor-param spread) so the policy is robust. Curriculum is driven externally by setting
@@ -34,7 +34,7 @@ TH_SCALE = 15.0      # rad/s normalizers
 PHI_SCALE = 25.0
 BETA_SCALE = 0.6     # board-tilt normalizer (~just above +-30 deg = 0.52 rad)
 BETADOT_SCALE = 3.0  # board-tilt-rate normalizer
-ARM_LIMIT = np.pi    # +-180 deg
+ARM_LIMIT = 2 * np.pi    # physical cable limit: one turn from neutral in either direction
 IMU_DECIM = 1        # BNO086 over I2C @ 200 Hz -> refresh beta every tick (matches the loop)
 DR_COMPONENTS = (
     "motor_gear",
@@ -90,10 +90,15 @@ class FurutaEnv(gym.Env):
         self.dr_probability = 1.0        # fraction of episodes with plant DR; rest rehearse clean
         self.dr_scale = 1.0              # interpolate nominal -> sampled full-range parameters
         self.dr_components = None        # None = all; otherwise iterable of DR_COMPONENTS names
+        self.dr_pole_damping_range = (2e-5, 1.0e-4)
+        self.dr_pole_friction_range = (0.2e-3, 0.6e-3)
         self.arm_envelope_w = 0.0        # >90deg arm penalty (0 = deployed-v1 behavior; off here)
         self.arm_center_w = 0.20         # arm-centering (phi/pi)^2 weight; LOWER it to allow the
                                          # arm to pump for swing-up (0.20 strangled it; ~0.02 frees it)
+        # Action-rate (smoothness) penalty weight; historical hard-coded value 0.02.
+        self.action_rate_w = float(os.environ.get("FURUTA_ACTION_RATE_W", "0.02"))
         self.arm_limit = ARM_LIMIT       # hard cable limit [rad]; set None to free the arm (diag)
+        self.success_arm_limit = np.deg2rad(330.0)  # leave 30 deg to unwind before hard limit
         # tilt curriculum (set externally): max board-tilt amplitude this stage (0 = level ground)
         self.tilt_amp = 0.0
         self.tilt_amp_min_fraction = 0.3
@@ -130,12 +135,14 @@ class FurutaEnv(gym.Env):
         # states and tilt trajectories exactly paired across component-ablation evaluations.
         gear = u(0.010, 0.016)
         dmp_a = u(3e-4, 10e-4)
-        dmp_p = u(2e-5, 1.0e-4)
+        dmp_p = u(*self.dr_pole_damping_range)
         fr_a = u(4e-3, 8e-3)
-        fr_p = u(0.2e-3, 0.6e-3)
+        fr_p = u(*self.dr_pole_friction_range)
         inertia_scale = u(0.92, 1.08)
         obs_noise = rng.uniform(0.0, 0.01)
-        sampled_delay = int(rng.integers(1, 4))
+        # Hardware experiments showed the policy fails at a 3-step (15 ms) delay.
+        # Model the measured deployable range only: 1-2 control steps (5-10 ms).
+        sampled_delay = int(rng.integers(1, 3))
 
         self.model.actuator_gear[0, 0] = (
             blend(self.nom["gear"], gear) if self._dr_enabled("motor_gear") else self.nom["gear"]
@@ -212,6 +219,9 @@ class FurutaEnv(gym.Env):
         self._best_up_streak = 0
         self._balance_window = deque(maxlen=int(2.0 / DT))
         self._was_up = False
+        self._max_abs_phi = abs(float(self.data.qpos[self.qadr_a]))
+        self._steps_outside_success_arm_limit = 0
+        self._cable_limit_hit = False
         self.act_buf = [0.0] * self._delay
 
         # tilt: per-episode random board motion (None = level ground). Amplitude + rate randomized
@@ -291,22 +301,25 @@ class FurutaEnv(gym.Env):
         # strong bonus for the actual balanced state.
         up = self._true_up()                                 # +1 true-vertical, -1 inverted (gravity)
         # arm-centering weight raised 0.03->0.2: the policy MUST keep the arm from winding to
-        # the +-180 limit (the LQR's failure mode, which the sim reproduced).
+        # the cable limit (the LQR's failure mode, which the sim reproduced).
         r = up - self.arm_center_w * (phi / np.pi)**2 - 0.005 * a**2 - 0.002 * phid**2
-        r -= 0.02 * (a - self.prev_action)**2               # mild smoothness (don't block corrective wiggle)
-        # steep arm-envelope past 90 deg: discourage using the arm as a 180-deg flywheel
+        r -= self.action_rate_w * (a - self.prev_action)**2  # smoothness (0.02 = mild; don't block corrective wiggle)
+        # optional steep arm-envelope past 90 deg: discourage using the arm as a flywheel
         # (the realism/cable risk seen in eval). Still allows transient pumping near 90-120 deg.
         r -= self.arm_envelope_w * max(0.0, abs(phi) - np.pi / 2) ** 2
         if up > 0.5:                                         # upper half: settle the pole
             r -= 0.01 * thd**2
-        # arm bound only matters when there's a cable; free arm (arm_limit None) -> no arm constraint
-        arm_ok = self.arm_limit is None or abs(phi) < np.pi / 2
-        # bonus only when balanced AND (cable: arm bounded) -> can't earn it by drifting
+        abs_phi = abs(phi)
+        self._max_abs_phi = max(self._max_abs_phi, abs_phi)
+        arm_ok = self.success_arm_limit is None or abs_phi < self.success_arm_limit
+        if not arm_ok:
+            self._steps_outside_success_arm_limit += 1
+        # Bonus only when balanced and inside the independently configured success margin.
         if up > 0.92 and abs(thd) < 3.0 and arm_ok:
             r += 2.0
         self.prev_action = a
 
-        # success = pendulum upright (cos>0.9 ~25 deg, |thd|<4) AND (cable: arm bounded <90 deg)
+        # Success requires upright/settled plus the independently configured arm margin.
         balanced = up > 0.9 and abs(thd) < 4.0 and arm_ok
         self._balance_window.append(balanced)
         if balanced:
@@ -322,6 +335,7 @@ class FurutaEnv(gym.Env):
         terminated = False
         if self.arm_limit is not None and abs(phi) > self.arm_limit:  # cable limit (None = free arm)
             r -= 10.0
+            self._cable_limit_hit = True
             terminated = True
         # fall-termination: once it's been up, ending the episode when it falls past 90 deg
         # removes post-fall garbage AND the "wind-the-arm-to-quit" fail-fast incentive.
@@ -340,6 +354,11 @@ class FurutaEnv(gym.Env):
             info["is_success"] = bool(
                 truncated and not terminated and final_occupancy >= 0.8
             )
+            info["max_abs_arm_deg"] = float(np.rad2deg(self._max_abs_phi))
+            info["fraction_outside_success_arm_limit"] = (
+                self._steps_outside_success_arm_limit / max(self.steps, 1)
+            )
+            info["cable_limit_hit"] = self._cable_limit_hit
 
         if self.render_mode == "human":
             self._render_human()

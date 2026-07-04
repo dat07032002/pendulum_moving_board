@@ -32,8 +32,6 @@ def critic_q(model: TQC, obs: np.ndarray, action: np.ndarray) -> float:
 
 def run_condition(model, axis, angle_deg, speed_deg, episodes, seed0, gamma):
     env = Furuta2DEnv(randomize=False, max_seconds=10.0)
-    env.arm_limit = None
-    env.arm_center_w = 0.0
     env.init_angle_max = np.pi
     env.tilt_axis_mode = axis
     env.tilt_amp = np.deg2rad(angle_deg)
@@ -45,6 +43,11 @@ def run_condition(model, axis, angle_deg, speed_deg, episodes, seed0, gamma):
     sat_before_loss = []            # frac saturated in WINDOW before end (non-success eps)
     cal_q, cal_rtg = [], []         # critic Q vs return-to-go on balanced states
     max_abs_a_all = []
+    # tightness/smoothness accumulators over upright steps (up > cos(10 deg))
+    up_steps = occ5_steps = occ7_steps = 0
+    abs_da_sum = 0.0
+    abs_da_n = 0
+    UP10, UP7, UP5 = np.cos(np.deg2rad([10.0, 7.0, 5.0]))
 
     for ep in range(episodes):
         obs, _ = env.reset(seed=seed0 + ep)
@@ -66,6 +69,18 @@ def run_condition(model, axis, angle_deg, speed_deg, episodes, seed0, gamma):
         rewards = np.asarray(rewards)
         qs = np.asarray(qs)
         max_abs_a_all.append(float(np.max(np.abs(actions))))
+
+        # tight-hold occupancy: of the steps spent upright (<10 deg), what fraction
+        # stayed within 7 / 5 deg. Smoothness: mean |da| over those upright steps.
+        up_mask = ups > UP10
+        up_steps += int(up_mask.sum())
+        occ7_steps += int((ups > UP7).sum())
+        occ5_steps += int((ups > UP5).sum())
+        if len(actions) > 1:
+            da = np.abs(np.diff(actions))
+            m = up_mask[1:]
+            abs_da_sum += float(da[m].sum())
+            abs_da_n += int(m.sum())
 
         success = bool(info.get("is_success", False))
         n_success += success
@@ -97,6 +112,9 @@ def run_condition(model, axis, angle_deg, speed_deg, episodes, seed0, gamma):
         "q_mean": float(cal_q.mean()) if len(cal_q) else float("nan"),
         "rtg_mean": float(cal_rtg.mean()) if len(cal_rtg) else float("nan"),
         "n_balanced": int(len(cal_q)),
+        "occ7": occ7_steps / up_steps if up_steps else float("nan"),
+        "occ5": occ5_steps / up_steps if up_steps else float("nan"),
+        "mean_abs_da": abs_da_sum / abs_da_n if abs_da_n else float("nan"),
     }
 
 
@@ -111,10 +129,10 @@ def main():
     gamma = float(model.gamma)
     conditions = [
         ("both", 0.0, 0.0),       # level: critic sanity
+        ("pitch", 10.0, 30.0),
+        ("pitch", 10.0, 45.0),
         ("pitch", 10.0, 60.0),
-        ("pitch", 10.0, 90.0),
-        ("pitch", 10.0, 120.0),
-        ("pitch", 15.0, 120.0),
+        ("both", 10.0, 60.0),
     ]
     print(f"model={args.model} gamma={gamma:g} episodes/cond={args.episodes}")
     print(f"{'cond':<18}{'succ':>6}{'catch':>6}{'falls':>6}"

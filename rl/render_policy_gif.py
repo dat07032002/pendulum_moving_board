@@ -48,6 +48,7 @@ def main() -> None:
     base_env.p_corner = args.p_corner
     base_env.dr_components = dr_component_set
     base_env.arm_limit = None
+    base_env.success_arm_limit = None
     env = (
         ResidualActionWrapper(base_env, args.residual_base, args.residual_scale)
         if args.residual_base

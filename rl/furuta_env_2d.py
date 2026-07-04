@@ -69,7 +69,57 @@ class Furuta2DEnv(FurutaEnv):
         # and the +2 bonus fire above these thresholds. Default 0.90 (~26 deg) / 0.92 (~23 deg).
         # Override with FURUTA_UP_THRESH to demand a tighter upright hold (e.g. 0.95 ~= 18 deg).
         self.up_thresh = float(os.environ.get("FURUTA_UP_THRESH", 0.90))
-        self.up_bonus = min(0.99, self.up_thresh + 0.02)
+        # Bonus gate at 80% of the success angle (angle space). The old
+        # `min(0.99, up_thresh + 0.02)` saturated for gates tighter than ~8 deg,
+        # collapsing the +2 balanced-bonus band; at the 10-deg production gate this
+        # derivation is ~8.0 deg vs the old 8.1 deg (behavior-preserving).
+        self.up_bonus = float(np.cos(0.8 * np.arccos(np.clip(self.up_thresh, -1.0, 1.0))))
+        # Preserve the historical 2D free-arm default. Deployment constraints are
+        # explicit environment variables so cable-aware and free-arm seeds are unambiguous.
+        self.arm_limit = None
+        self.success_arm_limit = None
+        self.arm_center_w = 0.0
+        if "FURUTA_CABLE_LIMIT_DEG" in os.environ:
+            value = os.environ["FURUTA_CABLE_LIMIT_DEG"].strip().lower()
+            self.arm_limit = None if value == "none" else np.deg2rad(float(value))
+        if "FURUTA_SUCCESS_ARM_LIMIT_DEG" in os.environ:
+            value = os.environ["FURUTA_SUCCESS_ARM_LIMIT_DEG"].strip().lower()
+            self.success_arm_limit = (
+                None if value == "none" else np.deg2rad(float(value))
+            )
+        if "FURUTA_ARM_CENTER_W" in os.environ:
+            self.arm_center_w = float(os.environ["FURUTA_ARM_CENTER_W"])
+        # Action-rate (smoothness) penalty weight; historical hard-coded value 0.02.
+        # Raise (e.g. 0.06-0.10) to train visibly smoother motor output.
+        self.action_rate_w = float(os.environ.get("FURUTA_ACTION_RATE_W", "0.02"))
+        # Actuator slew limit in volts per control tick (0 = disabled, legacy
+        # behavior). When >0 the applied motor voltage can change by at most this
+        # much per 5 ms tick; the firmware applies the identical limit in rlStep,
+        # so train and deploy see the same actuator. Breaks the +/-10 V 200 Hz
+        # bang-bang limit cycle observed on hardware 2026-07-04.
+        self.slew_v_per_tick = float(os.environ.get("FURUTA_SLEW_V_PER_TICK", "0"))
+        self._applied_v = 0.0
+        # First-order actuator lag [ms], modelling the real motor-electrical/FOC
+        # lag chain that produced the 26 Hz hardware limit cycle (2026-07-04).
+        # SIM-ONLY (the real rig already has the lag physically). "0" = off,
+        # "5" = fixed tau, "2,8" = per-episode uniform DR over the range.
+        lag_spec = os.environ.get("FURUTA_ACT_LAG_TAU_MS", "0")
+        if "," in lag_spec:
+            lo, hi = (float(x) for x in lag_spec.split(","))
+            self.act_lag_range = (lo, hi)
+        else:
+            v = float(lag_spec)
+            self.act_lag_range = (v, v)
+        self._act_lag_tau = 0.0
+        self._lag_v = 0.0
+        self.tight_upright_w = float(os.environ.get("FURUTA_TIGHT_UPRIGHT_W", "0"))
+        self.tight_upright_scale = np.deg2rad(
+            float(os.environ.get("FURUTA_TIGHT_UPRIGHT_SCALE_DEG", "10"))
+        )
+        self.cable_warning_w = float(os.environ.get("FURUTA_CABLE_WARNING_W", "0"))
+        self.cable_warning_start = np.deg2rad(
+            float(os.environ.get("FURUTA_CABLE_WARNING_START_DEG", "270"))
+        )
 
         bp = self.bid_pole
         self.nom = dict(
@@ -80,9 +130,13 @@ class Furuta2DEnv(FurutaEnv):
             fr_p=float(self.model.dof_frictionloss[self.dadr_p]),
             inertia_p=self.model.body_inertia[bp].copy(),
         )
-        self.tilt_speed_max = np.deg2rad(120.0)
-        self.tilt_accel_max = np.deg2rad(1200.0)
+        self.tilt_speed_max = np.deg2rad(60.0)
+        self.tilt_accel_max = np.deg2rad(600.0)
         self.tilt_axis_mode = "both"  # "both", "pitch", or "roll"
+        # New low-friction pole bearing (2026-07-01). Keep broad multiplicative
+        # coverage while centering the 2D plant below the legacy 0.35 mN*m model.
+        self.dr_pole_damping_range = (1.4e-5, 5.4e-5)
+        self.dr_pole_friction_range = (0.065e-3, 0.265e-3)
         self.imu_kwargs = {}  # evaluation/training overrides for the BNO086 measurement model
         self._board_velocity = np.zeros(6)
         self._roll_meas = self._pitch_meas = 0.0
@@ -100,7 +154,12 @@ class Furuta2DEnv(FurutaEnv):
         self._imu_latest = None
         self.tilt_gen_2d = None
         self.imu = None
+        self._applied_v = 0.0
+        self._lag_v = 0.0
         super().reset(seed=seed, options=options)
+        self._act_lag_tau = float(
+            self.np_random.uniform(self.act_lag_range[0], self.act_lag_range[1])
+        )
 
         rng = self.np_random
         if self.tilt_amp > 1e-8:
@@ -148,7 +207,23 @@ class Furuta2DEnv(FurutaEnv):
         a = float(np.clip(action[0], -1.0, 1.0))
         self.act_buf.append(a)
         a_eff = self.act_buf.pop(0)
-        self.data.ctrl[self.act_motor] = a_eff * self.v_max
+        v_cmd = a_eff * self.v_max
+        if self.slew_v_per_tick > 0.0:
+            # Actuator slew limit, mirrored in firmware (rlStep). Hidden actuator
+            # state: prev_action in the obs stays the POLICY output on both sides.
+            v_cmd = float(np.clip(
+                v_cmd,
+                self._applied_v - self.slew_v_per_tick,
+                self._applied_v + self.slew_v_per_tick,
+            ))
+        self._applied_v = v_cmd
+        if self._act_lag_tau > 0.0:
+            # First-order motor lag AFTER the (digital) slew limiter, matching the
+            # physical chain: policy -> delay -> firmware slew -> motor electrical lag.
+            alpha = (DT * 1000.0) / (self._act_lag_tau + DT * 1000.0)
+            self._lag_v += alpha * (v_cmd - self._lag_v)
+            v_cmd = self._lag_v
+        self.data.ctrl[self.act_motor] = v_cmd
         if self.tilt_gen_2d is None:
             roll_ref = pitch_ref = 0.0
         else:
@@ -198,12 +273,33 @@ class Furuta2DEnv(FurutaEnv):
             - self.arm_center_w * (phi / np.pi) ** 2
             - 0.005 * a**2
             - 0.002 * phid**2
-            - 0.02 * (a - self.prev_action) ** 2
+            - self.action_rate_w * (a - self.prev_action) ** 2
         )
         reward -= self.arm_envelope_w * max(0.0, abs(phi) - np.pi / 2) ** 2
+        if self.tight_upright_w > 0.0:
+            pole_error = np.arccos(np.clip(up, -1.0, 1.0))
+            reward += self.tight_upright_w * np.exp(
+                -(pole_error / self.tight_upright_scale) ** 2
+            )
         if up > 0.5:
             reward -= 0.01 * thd**2
-        arm_ok = self.arm_limit is None or abs(phi) < np.pi / 2
+        abs_phi = abs(phi)
+        if (
+            self.cable_warning_w > 0.0
+            and self.success_arm_limit is not None
+            and self.success_arm_limit > self.cable_warning_start
+        ):
+            cable_progress = np.clip(
+                (abs_phi - self.cable_warning_start)
+                / (self.success_arm_limit - self.cable_warning_start),
+                0.0,
+                1.0,
+            )
+            reward -= self.cable_warning_w * cable_progress**2
+        self._max_abs_phi = max(self._max_abs_phi, abs_phi)
+        arm_ok = self.success_arm_limit is None or abs_phi < self.success_arm_limit
+        if not arm_ok:
+            self._steps_outside_success_arm_limit += 1
         if up > self.up_bonus and abs(thd) < 3.0 and arm_ok:
             reward += 2.0
         self.prev_action = a
@@ -222,6 +318,7 @@ class Furuta2DEnv(FurutaEnv):
         terminated = False
         if self.arm_limit is not None and abs(phi) > self.arm_limit:
             reward -= 10.0
+            self._cable_limit_hit = True
             terminated = True
         if self._was_up and up < 0.0:
             terminated = True
@@ -232,6 +329,11 @@ class Furuta2DEnv(FurutaEnv):
             occupancy = float(np.mean(self._balance_window)) if self._balance_window else 0.0
             info["final_balance_occupancy"] = occupancy
             info["is_success"] = bool(truncated and not terminated and occupancy >= 0.8)
+            info["max_abs_arm_deg"] = float(np.rad2deg(self._max_abs_phi))
+            info["fraction_outside_success_arm_limit"] = (
+                self._steps_outside_success_arm_limit / max(self.steps, 1)
+            )
+            info["cable_limit_hit"] = self._cable_limit_hit
 
         if self.render_mode == "human":
             self._render_human()

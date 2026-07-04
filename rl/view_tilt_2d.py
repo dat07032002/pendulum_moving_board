@@ -19,8 +19,8 @@ def main() -> None:
     parser.add_argument("--period", type=float, default=8.0, help="roll cycle period [s]")
     parser.add_argument("--mode", choices=("random", "sine", "static"), default="random")
     parser.add_argument("--seed", type=int, default=0, help="reproducible random sequence")
-    parser.add_argument("--speed", type=float, default=120.0, help="maximum speed [deg/s]")
-    parser.add_argument("--accel", type=float, default=1200.0, help="maximum acceleration [deg/s^2]")
+    parser.add_argument("--speed", type=float, default=60.0, help="maximum speed [deg/s]")
+    parser.add_argument("--accel", type=float, default=600.0, help="maximum acceleration [deg/s^2]")
     args = parser.parse_args()
 
     xml_path = Path(__file__).with_name("furuta_2d.xml")
