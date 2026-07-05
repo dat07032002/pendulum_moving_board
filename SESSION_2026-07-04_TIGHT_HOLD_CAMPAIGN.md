@@ -95,6 +95,36 @@ tight7d policies are being trained WITH that actuator so they will not fight it.
   the lag physically; the compiled-in RL_SLEW_V_PER_TICK path stays dormant unless a header
   defines it). Screens auto-run on the 6 ms plant, seed block 620000, incl. tight7c_s1 ref.
 
+## tight7f results and second hardware deployment (2026-07-04 evening)
+
+- tight7f seeds diverged: s2 = textbook success (0.43 -> 0.87 on the lagged plant while m|da|
+  0.50 -> 0.14); s0 smooth-but-weak; s1 strong-but-jittery; both arw=0.15 hedges collapsed
+  (strong smoothness pressure is REQUIRED with the lag model).
+- **tight7f_s2 passed all finals**: lagged nominal 500 eps 84.4-92.0% (1 hit/4000, Q/RTG
+  325/304); no-lag sanity 93.7-98.0% with m|da| 0.007-0.049 (does not depend on lag; best
+  plain-plant policy to date); lagged DR 46-61% (thin, expected for stacked mismatch).
+- **Deployed** (sha 0c302f9a...ba54e8e, pure policy swap, no firmware change). Hardware A/B:
+  level 68% in-band / 20.3 s hold / 3 drops; tilt 73% / 23.4 s hold / **1 drop** (vs 9 drops
+  originally). Fall-reduction goal delivered.
+- Residual: hardware limit cycle persists at 27-31 Hz (dV RMS 8.5 vs 9.1; theta std 4.5 deg) —
+  bounded and non-fatal now, but audible.
+
+## Lag sweep: the residual cycle is a TRANSPORT-DELAY effect
+
+Sweeping sim lag/delay with tight7f_s2 (`lag_sweep.py`): immune to first-order lag up to 20 ms
+at delay=1 (m|da| ~0.01, theta std <1 deg, 100% in-band) but limit-cycles at delay=2 (m|da|
+0.19-0.34) at ANY lag. The real loop's effective delay is therefore between 1 and 2 ticks
+(sensor age + compute placement + FOC timing), which first-order lag cannot represent.
+
+## In flight overnight: tight7g (delay-robustness consolidation)
+
+5 seeds from tight7f_s2: per-episode delay in {1,2} (`FURUTA_DELAY_STEPS`, new env knob for
+nominal-plant training) + lag DR 3-9 ms, arw 0.3, fixed 0.2 anchor, 7-deg gate. This is NOT the
+failed 2026-07-03 delay recipe (which switched to delay-2-only mid-run under the 1e6 BC clamp).
+Server-side chain screens every candidate at BOTH explicit delays (seed block 820000, lag 6 ms)
+plus tight7f_s2 at delay=2 as reference. Success = delay-2 screen comparable to delay-1 with
+m|da| low at both -> should kill the hardware limit cycle. Then Stage B (5 deg) from the winner.
+
 ## Next steps
 
 1. Review tight7d screens; winner -> 500-ep finals (slewed plant, nominal + DR).

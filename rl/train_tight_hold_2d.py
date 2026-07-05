@@ -280,6 +280,8 @@ def main():
     parser.add_argument("--slew-v", type=float, default=0.0)
     # Sim-only first-order actuator lag [ms]: "0" off, "5" fixed, "2,8" DR range.
     parser.add_argument("--act-lag-ms", default="0")
+    # Action-delay steps: "1" fixed, "1,2" per-episode choice (nominal-plant DR).
+    parser.add_argument("--delay-steps", default="1")
     args = parser.parse_args()
 
     # Export the tight-training reward configuration BEFORE any env construction.
@@ -290,6 +292,7 @@ def main():
     os.environ["FURUTA_ACTION_RATE_W"] = f"{args.action_rate_w:g}"
     os.environ["FURUTA_SLEW_V_PER_TICK"] = f"{args.slew_v:g}"
     os.environ["FURUTA_ACT_LAG_TAU_MS"] = str(args.act_lag_ms)
+    os.environ["FURUTA_DELAY_STEPS"] = str(args.delay_steps)
 
     from retention_tqc import RetentionTQC
 
@@ -334,6 +337,7 @@ def main():
         f"[tight] gate={args.up_thresh_deg:g}deg scale={args.tight_scale_deg:g}deg "
         f"tight_w={args.tight_w:g} action_rate_w={args.action_rate_w:g} "
         f"slew_v={args.slew_v:g} act_lag_ms={args.act_lag_ms} "
+        f"delay_steps={args.delay_steps} "
         f"actor_lr={args.actor_lr:g} critic_lr={args.critic_lr:g} "
         f"warmup={args.warmup_steps} rehearsal={not args.no_rehearsal}",
         flush=True,

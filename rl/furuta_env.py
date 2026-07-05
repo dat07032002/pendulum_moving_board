@@ -200,6 +200,17 @@ class FurutaEnv(gym.Env):
         self._obs_noise = 0.0
         self._delay = 1
         self._randomize()
+        # Per-episode delay override for NOMINAL-plant training (_randomize only
+        # touches delay under full DR, and would overwrite a value set before it).
+        # "1,2" trains robustness across the real loop's fractional-tick phase
+        # (hardware limit cycle 2026-07-04: effective delay is between 1 and 2).
+        delay_spec = os.environ.get("FURUTA_DELAY_STEPS", "1")
+        if delay_spec != "1":
+            if "," in delay_spec:
+                choices = [int(x) for x in delay_spec.split(",")]
+                self._delay = int(self.np_random.choice(choices))
+            else:
+                self._delay = int(delay_spec)
         mujoco.mj_resetData(self.model, self.data)
 
         # initial state from curriculum: theta_up in +-init_angle_max about upright/hanging
