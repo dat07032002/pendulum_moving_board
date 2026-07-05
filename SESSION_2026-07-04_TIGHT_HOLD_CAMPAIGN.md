@@ -125,6 +125,22 @@ Server-side chain screens every candidate at BOTH explicit delays (seed block 82
 plus tight7f_s2 at delay=2 as reference. Success = delay-2 screen comparable to delay-1 with
 m|da| low at both -> should kill the hardware limit cycle. Then Stage B (5 deg) from the winner.
 
+## tight7g verdict: delay-2 robustness is unlearnable without action history
+
+All 5 tight7g seeds flat-lined (targets 0.00-0.18 for the full 400k, no dip-and-recover).
+Third independent recipe to fail at delay-2 (after the 2026-07-03 continuation and progressive
+full-DR). Conclusion: with a single prev_action in the obs, the delay-2 system is too partially
+observed to learn - the structural fix is an action-history observation (new obs dim: firmware
++ exporter + env + near-scratch retrain). NOT worth it while the residual hum is bounded and
+non-fatal. Cheaper residual-hum lever left on the table: shave real firmware loop latency
+(sense -> compute -> drive ordering).
+
+## In flight: Stage B (the +/-5 deg tightness goal)
+
+5 seeds from tight7f_s2, delay FIXED at 1, lag DR 3-9 ms retained, tight_w 1.0 @ scale 5 deg:
+GPUs 0-2 gate 5 deg (tight5_s0..2), GPUs 3-4 gate 6 deg hedge (tight6_h0..1). Server-side chain
+screens all candidates + tight7f_s2 ref on the 6 ms plant (seed block 920000).
+
 ## Next steps
 
 1. Review tight7d screens; winner -> 500-ep finals (slewed plant, nominal + DR).
