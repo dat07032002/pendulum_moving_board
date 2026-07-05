@@ -68,9 +68,9 @@ def main():
     W1, b1 = _linear_params(sd, "latent_pi.2")
     Wm, bm = _linear_params(sd, "mu")
     H0, H1, OBS = W0.shape[0], W1.shape[0], W0.shape[1]
-    if OBS not in (6, 8, 10):
+    if OBS not in (6, 8, 10, 12):
         raise ValueError(
-            f"unsupported observation dimension {OBS}; expected a 6-D, 8-D, or 10-D policy"
+            f"unsupported observation dimension {OBS}; expected a 6/8/10/12-D policy"
         )
     if W1.shape[1] != H0 or Wm.shape != (1, H1):
         raise ValueError(
@@ -114,11 +114,13 @@ def main():
         obs_fields = "cos th, sin th, thd/15, clip(phi/pi,+-2), phid/25, prev_action"
         if OBS == 8:
             obs_fields += ", beta/0.6, betad/3"
-        elif OBS == 10:
+        elif OBS in (10, 12):
             obs_fields += (
                 ", clip(imu_roll/rad(15),+-2), clip(imu_pitch/rad(15),+-2)"
                 ", gyro_x/rad(80), gyro_y/rad(80)"
             )
+            if OBS == 12:
+                obs_fields += ", prev_action2, prev_action3"
         f.write(f"// obs = [{obs_fields}]\n\n")
         f.write("#pragma once\n")
         f.write(f"#define RL_OBS {OBS}\n")

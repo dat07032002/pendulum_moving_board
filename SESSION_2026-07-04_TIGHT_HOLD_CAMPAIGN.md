@@ -141,6 +141,30 @@ non-fatal. Cheaper residual-hum lever left on the table: shave real firmware loo
 GPUs 0-2 gate 5 deg (tight5_s0..2), GPUs 3-4 gate 6 deg hedge (tight6_h0..1). Server-side chain
 screens all candidates + tight7f_s2 ref on the 6 ms plant (seed block 920000).
 
+## Stage B early read + the convergence insight
+
+Stage B (5/6-deg gates) finished without collapse but occ5 stayed 0.60-0.67 on the moving-board
+cell — as it has across EVERY campaign. ~65% occ5 under 10 deg / 60 deg/s tilt looks like a
+physical ceiling (the pole must lean transiently to track a fast board). Level occ5 is already
+~99% in sim. The REAL blocker for a visible +/-5 deg hold on hardware is the residual 27-31 Hz
+limit cycle (amplitude ~4.5 deg). Conclusion: the tightness goal and the vibration goal converge
+on the same fix — kill the limit cycle via action-history observability. Screens pending.
+
+## In flight: tight8 — the action-history campaign (obs 10 -> 12)
+
+- `FURUTA_ACT_HISTORY` env knob: appends a_{t-2}, a_{t-3} to the obs (default 0 = legacy 10-D).
+  Restores full observability for transport delay <= 3 (the property whose absence collapsed
+  tight7g/delay-continuation/progressive-delay).
+- **Surgical warm start** (`rl/expand_obs_warmstart.py`): tight7f_s2 expanded 10->12-D with
+  zero-initialized new input columns across actor + critics + targets -> bit-exact behavioral
+  equivalence at start (max action diff 0.00e+00). No near-scratch cost.
+- Teacher rehearsal: retention_tqc zero-pads 10-D teacher obs to the model width (consistent
+  with the zero-init columns, so the BC anchor stays exact on teacher states).
+- tight8: 5 seeds from the expanded warm start, delay {1,2} + lag DR 3-9 ms, otherwise the
+  proven tight7f recipe. Chain screens both delays vs tight7f_s2-at-delay-2 reference.
+- Deploy path pre-validated: exporter OBS=12, firmware RL_OBS==12 (rl_prev_action2/3 shifted
+  after the forward pass, reset at engage/recover), 12-D and 10-D builds both compile.
+
 ## Next steps
 
 1. Review tight7d screens; winner -> 500-ep finals (slewed plant, nominal + DR).

@@ -43,6 +43,29 @@ class RetentionTQC(TQC):
             self.teacher_data = {
                 key: np.asarray(data[key], dtype=np.float32) for key in required
             }
+            # Zero-pad teacher observations recorded with a NARROWER obs than the
+            # model (e.g. legacy 10-D data used with a 12-D action-history model).
+            # Zero history matches the expanded warm start's zero-initialized new
+            # input columns, so the BC anchor stays exact on teacher states.
+            model_obs = int(self.observation_space.shape[0])
+            for key in ("observations", "next_observations"):
+                width = self.teacher_data[key].shape[1]
+                if width < model_obs:
+                    pad = np.zeros(
+                        (len(self.teacher_data[key]), model_obs - width),
+                        dtype=np.float32,
+                    )
+                    self.teacher_data[key] = np.concatenate(
+                        [self.teacher_data[key], pad], axis=1
+                    )
+                    print(
+                        f"[retention] padded teacher {key} {width}-D -> {model_obs}-D",
+                        flush=True,
+                    )
+                elif width > model_obs:
+                    raise ValueError(
+                        f"teacher {key} wider ({width}) than model obs ({model_obs})"
+                    )
             transition_count = lengths["observations"]
         else:
             self.teacher_data = {}

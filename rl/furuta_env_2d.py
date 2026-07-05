@@ -112,6 +112,13 @@ class Furuta2DEnv(FurutaEnv):
             self.act_lag_range = (v, v)
         self._act_lag_tau = 0.0
         self._lag_v = 0.0
+        # Extra past actions appended to the obs (a_{t-2}, a_{t-3}, ...). With
+        # only prev_action (a_{t-1}) the delay-2 system is partially observed —
+        # three delay campaigns collapsed on that (2026-07-03/04). 2 extra
+        # actions restore full observability for delay <= 3. Default 0 keeps
+        # the legacy 10-D obs and all existing checkpoints/tools working.
+        self.act_history = int(os.environ.get("FURUTA_ACT_HISTORY", "0"))
+        self._act_hist = [0.0] * self.act_history
         self.tight_upright_w = float(os.environ.get("FURUTA_TIGHT_UPRIGHT_W", "0"))
         self.tight_upright_scale = np.deg2rad(
             float(os.environ.get("FURUTA_TIGHT_UPRIGHT_SCALE_DEG", "10"))
@@ -145,7 +152,9 @@ class Furuta2DEnv(FurutaEnv):
         self.tilt_gen_2d = None
         self.imu = None
 
-        self.observation_space = spaces.Box(-np.inf, np.inf, (10,), np.float32)
+        self.observation_space = spaces.Box(
+            -np.inf, np.inf, (10 + self.act_history,), np.float32
+        )
 
     def reset(self, *, seed=None, options=None):
         # Defaults are needed because FurutaEnv.reset dynamically calls our _obs().
@@ -156,6 +165,7 @@ class Furuta2DEnv(FurutaEnv):
         self.imu = None
         self._applied_v = 0.0
         self._lag_v = 0.0
+        self._act_hist = [0.0] * self.act_history
         super().reset(seed=seed, options=options)
         self._act_lag_tau = float(
             self.np_random.uniform(self.act_lag_range[0], self.act_lag_range[1])
@@ -199,6 +209,7 @@ class Furuta2DEnv(FurutaEnv):
                 np.clip(self._pitch_meas / BOARD_ANGLE_SCALE, -2.0, 2.0),
                 self._gyro_x_meas / BOARD_RATE_SCALE,
                 self._gyro_y_meas / BOARD_RATE_SCALE,
+                *self._act_hist,
             ],
             dtype=np.float32,
         )
@@ -302,6 +313,10 @@ class Furuta2DEnv(FurutaEnv):
             self._steps_outside_success_arm_limit += 1
         if up > self.up_bonus and abs(thd) < 3.0 and arm_ok:
             reward += 2.0
+        # shift action history BEFORE prev_action updates: _act_hist becomes
+        # [a_{t-2}, a_{t-3}, ...] as seen by the NEXT observation
+        if self.act_history > 0:
+            self._act_hist = [self.prev_action] + self._act_hist[:-1]
         self.prev_action = a
 
         balanced = up > self.up_thresh and abs(thd) < 4.0 and arm_ok

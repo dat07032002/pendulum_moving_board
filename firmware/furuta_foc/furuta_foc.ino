@@ -105,6 +105,8 @@ RunMode run_mode = MODE_IDLE;
 // RL on-chip policy state (MODE_RL): prev_action goes into the obs; phi_ref recenters the
 // arm at engage so the policy's arm-centering matches the sim (which starts arm near 0).
 float rl_prev_action = 0.0f;
+float rl_prev_action2 = 0.0f;  // a_{t-2} (RL_OBS==12 action history)
+float rl_prev_action3 = 0.0f;  // a_{t-3}
 float rl_applied_v = 0.0f;   // slew-limited applied voltage state (RL_SLEW_V_PER_TICK)
 float rl_phi_ref = 0.0f;
 const float RL_ARM_LIMIT = 330.0f * PI / 180.0f;   // unwind before the physical +/-360 deg limit
@@ -579,14 +581,14 @@ void handleCommand(char *cmd) {
     Serial.println("# balance armed: lift the rod upright"); return;
   }
   if (!strcmp(cmd, "rl")) {
-#if RL_OBS == 10
+#if RL_OBS == 10 || RL_OBS == 12
     if (!rlIMUReady()) {
       run_mode = MODE_IDLE; manual_voltage = 0.0f; motorOff();
       Serial.println("# RL REFUSED: BNO086 must be valid, tared, and fresh; use 'imu'");
       return;
     }
 #endif
-    rl_prev_action = 0.0f; rl_applied_v = 0.0f; rl_phi_ref = phi_full;   // recenter arm at engage
+    rl_prev_action = rl_prev_action2 = rl_prev_action3 = 0.0f; rl_applied_v = 0.0f; rl_phi_ref = phi_full;   // recenter arm at engage
     run_mode = MODE_RL;
     Serial.println("# RL policy on (on-chip MLP). hold rod upright; 's' to stop"); return;
   }
@@ -836,7 +838,7 @@ bool buildRLObservation(float *obs) {
   obs[3] = constrain(phi / PI, -2.0f, 2.0f);
   obs[4] = phi_dot_filt / 25.0f;
   obs[5] = rl_prev_action;
-#if RL_OBS == 10
+#if RL_OBS == 10 || RL_OBS == 12
   if (!rlIMUReady()) return false;
   const float board_angle_scale = 15.0f * PI / 180.0f;
   const float board_rate_scale = 80.0f * PI / 180.0f;
@@ -844,8 +846,14 @@ bool buildRLObservation(float *obs) {
   obs[7] = constrain(bno_pitch / board_angle_scale, -2.0f, 2.0f);
   obs[8] = bno_gyro_x / board_rate_scale;
   obs[9] = bno_gyro_y / board_rate_scale;
+#if RL_OBS == 12
+  // Action history (a_{t-2}, a_{t-3}): restores observability under 1-2 tick
+  // transport delay; must match Furuta2DEnv FURUTA_ACT_HISTORY=2 ordering.
+  obs[10] = rl_prev_action2;
+  obs[11] = rl_prev_action3;
+#endif
 #elif RL_OBS != 6
-#error "Firmware supports only RL_OBS=6 (legacy) or RL_OBS=10 (two-axis BNO086)"
+#error "Firmware supports only RL_OBS=6 (legacy), 10, or 12 (10 plus action history)"
 #endif
   return true;
 }
@@ -863,9 +871,11 @@ void rlStep(float dt) {
     return;
   }
   float a = rlForward(obs);
+  rl_prev_action3 = rl_prev_action2;   // shift action history (12-D obs)
+  rl_prev_action2 = rl_prev_action;
   rl_prev_action = a;
   float v_cmd = a * RL_VMAX;                         // training voltage; driveVoltage clips to vlim
-#if defined(RL_SLEW_V_PER_TICK) && RL_OBS == 10
+#if defined(RL_SLEW_V_PER_TICK) && (RL_OBS == 10 || RL_OBS == 12)
   // Actuator slew limit, mirrored EXACTLY in Furuta2DEnv (FURUTA_SLEW_V_PER_TICK).
   // Only deploy a policy trained with the same value. Breaks the +/-10 V 200 Hz
   // bang-bang limit cycle (2026-07-04). rl_applied_v resets on engage/stop.
@@ -881,7 +891,7 @@ void rlStep(float dt) {
 void rlRecoverStep(float dt) {
   float phi = phi_full - rl_phi_ref;
   if (fabsf(phi) < 0.35f && fabsf(phi_dot_filt) < 1.0f) {   // recentered + slow -> retry
-    motorOff(); rl_prev_action = 0.0f; rl_applied_v = 0.0f; run_mode = MODE_RL;
+    motorOff(); rl_prev_action = rl_prev_action2 = rl_prev_action3 = 0.0f; rl_applied_v = 0.0f; run_mode = MODE_RL;
     Serial.println("# recentered -> re-engaging RL"); return;
   }
   if (millis() - rl_recover_ms > RL_RECOVER_TIMEOUT_MS) {   // stuck -> give up
@@ -903,7 +913,7 @@ void loop() {
   // Boot auto-start: engage the RL policy a few seconds after power-on (plug-and-play).
   if (rl_autostart_pending && millis() - boot_ms > RL_AUTOSTART_MS) {
     rl_autostart_pending = false;
-    rl_prev_action = 0.0f; rl_applied_v = 0.0f; rl_phi_ref = phi_full;     // recenter arm at engage
+    rl_prev_action = rl_prev_action2 = rl_prev_action3 = 0.0f; rl_applied_v = 0.0f; rl_phi_ref = phi_full;     // recenter arm at engage
     run_mode = MODE_RL;
     Serial.println("# auto-start: RL swing-up + balance");
   }

@@ -282,6 +282,10 @@ def main():
     parser.add_argument("--act-lag-ms", default="0")
     # Action-delay steps: "1" fixed, "1,2" per-episode choice (nominal-plant DR).
     parser.add_argument("--delay-steps", default="1")
+    # Extra past actions in the obs (0 = legacy 10-D; 2 = 12-D action history,
+    # restores observability for delay <= 3; warm start must match, see
+    # expand_obs_warmstart.py).
+    parser.add_argument("--act-history", type=int, default=0)
     args = parser.parse_args()
 
     # Export the tight-training reward configuration BEFORE any env construction.
@@ -293,6 +297,7 @@ def main():
     os.environ["FURUTA_SLEW_V_PER_TICK"] = f"{args.slew_v:g}"
     os.environ["FURUTA_ACT_LAG_TAU_MS"] = str(args.act_lag_ms)
     os.environ["FURUTA_DELAY_STEPS"] = str(args.delay_steps)
+    os.environ["FURUTA_ACT_HISTORY"] = str(args.act_history)
 
     from retention_tqc import RetentionTQC
 
@@ -337,7 +342,7 @@ def main():
         f"[tight] gate={args.up_thresh_deg:g}deg scale={args.tight_scale_deg:g}deg "
         f"tight_w={args.tight_w:g} action_rate_w={args.action_rate_w:g} "
         f"slew_v={args.slew_v:g} act_lag_ms={args.act_lag_ms} "
-        f"delay_steps={args.delay_steps} "
+        f"delay_steps={args.delay_steps} act_history={args.act_history} "
         f"actor_lr={args.actor_lr:g} critic_lr={args.critic_lr:g} "
         f"warmup={args.warmup_steps} rehearsal={not args.no_rehearsal}",
         flush=True,
