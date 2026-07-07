@@ -165,6 +165,41 @@ on the same fix — kill the limit cycle via action-history observability. Scree
 - Deploy path pre-validated: exporter OBS=12, firmware RL_OBS==12 (rl_prev_action2/3 shifted
   after the forward pass, reset at engage/recover), 12-D and 10-D builds both compile.
 
+## tight8 verdict and THIRD deployment (2026-07-05) — campaign closed
+
+Screens + 500-ep finals (lagged plant, seed blocks 1020000/1120000):
+
+- **tight8_s2 = the project's best policy.** Delay-1: level 98.6 / roll 98.2 / pitch 97.8-98.6 /
+  both 85.8-95.8%, m|da| 0.045-0.119, 10 hits/4000, critic 341/307. Delay-2 (every prior policy:
+  exactly 0.0%): level 97.4 / pitch 91.6-93.4 / both 71.8-85.6%, 8 hits/4000. The action-history
+  observability fix is proven.
+- tight8_s3 eliminated by the finals (screen looked smooth; both-cells collapsed to 27-50% at
+  500 eps, critic Q=3 vs RTG 258 — the smoothness was disengagement).
+- Only s2/s3 of 5 seeds ever passed the zero-hit safety gate; s0/s1/s4 discarded.
+
+**Deployed** tight8_s2 (sha 61e27050...697d3b, first 12-D obs firmware). Hardware A/B vs
+tight7f_s2 (s8_*.txt vs s2f_*.txt logs):
+
+- **26-31 Hz pole limit cycle: GONE** (theta spectrum now 0.5-3.3 Hz natural corrections only).
+- Pole wobble std 4.5 -> 3.5 deg; in-band(10) 74-75 -> 77-78%; in-band(5) 42-43 -> **47-49%**.
+- Voltage dither moved 25 -> ~50 Hz and rose slightly (dV RMS 8.75 -> 11.0 V/tick) — the pole
+  no longer follows it (mechanically filtered); acoustics judged acceptable by the user.
+- Drops: level 7 vs 3, tilt 3 vs 1 (single-run noise; in-band totals favor s8).
+
+User accepted current performance — campaign closed with goals: falls FIXED (1-7 drops/30 s vs 9
+originally, 20+ s holds), vibration TRANSFORMED (limit cycle dead, residual is high-freq dither),
+tightness IMPROVED (+6 pts in-band(5) hardware, sim occ5 at its physical ceiling).
+
+Optional future work, in order of value: (1) mild firmware slew limiter 6 V/tick — the policy is
+delay-robust and might tolerate it without retraining (test directly, flash back if not) — to
+quiet the 50 Hz dither; (2) obs-noise-matched training to remove the dither at its source;
+(3) BNO086 NRST wiring; (4) AS5600 magnet gap (AGC ~120/128, marginal); (5) firmware
+loop-latency shaving.
+
+Housekeeping: final_tight8_*.json / tight8_screen_*.json still on the server (VPN was down at
+close); fetch to eval/ when connected. Rig-side tooling now lives in `tools/` (serial helpers
+that do NOT reset the ESP32 on connect, stage runner, log analyzers, friction ID, lag sweep).
+
 ## Next steps
 
 1. Review tight7d screens; winner -> 500-ep finals (slewed plant, nominal + DR).
