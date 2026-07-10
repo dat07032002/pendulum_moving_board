@@ -1,0 +1,31 @@
+Reflashing the pendulum ESP32 (prebuilt binaries — no Arduino toolchain needed)
+================================================================================
+
+These are app-only images: flashing them does NOT touch the motor/encoder
+calibration stored on the chip. No recalibration needed afterwards.
+
+furuta_12d_tight8_s2_current.bin   the current/best policy (what the rig runs now)
+furuta_10d_tight7f_s2.bin          the previous known-good baseline
+
+One-time setup (any PC with Python):
+    pip install esptool
+
+Flash (adjust COM port; find it in Device Manager or with
+`python -c "import serial.tools.list_ports as l; [print(p) for p in l.comports()]"`
+after `pip install pyserial`):
+
+    python -m esptool --chip esp32 --port COM5 --baud 460800 write_flash 0x10000 furuta_12d_tight8_s2_current.bin
+
+Check it works (motor power can stay OFF for steps 1-3):
+    1. Open a serial terminal at 921600 baud (e.g. `python -m serial.tools.miniterm COM5 921600`)
+    2. Type `health` -> both encoder lines should show MD=1 / OCF=1
+       Type `imu`    -> should show valid=1  (if boot said "BNO086 missing":
+       unplug USB and motor power for 10 s, plug back in — known quirk)
+    3. Type `rlcheck` -> prints the observation vector and an action, motor off
+    4. Motor power ON, pendulum hanging, arm at the cable's center position,
+       board level, hand near the keyboard: type `rl` to start, `s` to stop.
+       It should swing up and balance within ~2 s.
+
+If anything is off, flash the other .bin the same way — they are interchangeable.
+Boot always leaves the motor idle; only `rl` starts it. The arm auto-recovers
+from cable-limit hits; `s` or cutting motor power stops everything instantly.
