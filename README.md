@@ -5,6 +5,9 @@ Keep a Furuta (rotary inverted) pendulum balanced **upright to true gravity-vert
 third project in a lineage: level ground → one-axis tilt → **two-axis tilt (this repo)**.
 
 **Read these first** for the full story and method rationale:
+- `CYBERRUNNER_PENDULUM_INTEGRATION.md` - design for combining pendulum-aware
+  CyberRunner DreamerV3 with command-preview pendulum control, synchronized
+  hardware logging, simulation-first training, and deployment gates.
 - `SESSION_2026-07-03_DELAY_TRAINING_AND_DEPLOYMENT_HANDOFF.md` — current cable-safety and delay
   results, deployment preparation, blockers, and exact continuation point.
 - `PROJECT_REPORT.pdf` — 2-page summary (methods + result figures).
